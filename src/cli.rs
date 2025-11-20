@@ -28,8 +28,13 @@ pub enum Commands {
 pub enum AtCommands {
     /// Print the table metadata
     Metadata,
-    /// Print the current table schema
-    Schema,
+    /// List all schemas
+    Schemas,
+    /// Inspect a specific schema
+    Schema {
+        /// The schema ID, or "current"
+        schema_id: String,
+    },
     /// List all snapshots
     Snapshots,
     /// Inspect a specific snapshot

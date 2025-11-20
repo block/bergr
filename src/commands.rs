@@ -10,8 +10,21 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
 
     let output = match command {
         AtCommands::Metadata => serde_json::to_string_pretty(&metadata)?,
-        AtCommands::Schema => {
-            let schema = metadata.current_schema();
+        AtCommands::Schemas => {
+            let schemas: Vec<_> = metadata.schemas_iter().collect();
+            serde_json::to_string_pretty(&schemas)?
+        },
+        AtCommands::Schema { schema_id } => {
+            let id = if schema_id == "current" {
+                metadata.current_schema_id()
+            } else {
+                schema_id.parse::<i32>()
+                    .context("Schema ID must be an integer")?
+            };
+
+            let schema = metadata.schema_by_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Schema {} not found", id))?;
+            
             serde_json::to_string_pretty(schema)?
         },
         AtCommands::Snapshots => {
@@ -164,12 +177,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_schema() -> Result<()> {
+    async fn test_handle_schema_current() -> Result<()> {
         let metadata_json = minimal_metadata();
         let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
 
-        let output = handle_at_command(&client, location, AtCommands::Schema).await?;
+        let output = handle_at_command(&client, location, AtCommands::Schema { schema_id: "current".to_string() }).await?;
         
         // Verify output contains schema fields
         assert!(output.contains("\"name\": \"id\""));
