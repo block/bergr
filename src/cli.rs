@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 /// bergr: A tool for inspecting Apache Iceberg tables
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
@@ -12,7 +12,7 @@ pub struct Cli {
     pub debug: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Operate on a table at a specific location
     At {
@@ -24,8 +24,17 @@ pub enum Commands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum AtCommands {
     /// Print the table metadata
     Metadata,
+    /// Print the current table schema
+    Schema,
+    /// List all snapshots
+    Snapshots,
+    /// Inspect a specific snapshot
+    Snapshot {
+        /// The snapshot ID, or "current"
+        snapshot_id: String,
+    },
 }
