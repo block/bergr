@@ -41,5 +41,13 @@ pub enum AtCommands {
     Snapshot {
         /// The snapshot ID, or "current"
         snapshot_id: String,
+        #[command(subcommand)]
+        command: Option<SnapshotCmd>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnapshotCmd {
+    /// List files in the snapshot
+    Files,
 }

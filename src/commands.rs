@@ -1,8 +1,16 @@
 use anyhow::{Context, Result};
-use iceberg::spec::TableMetadata;
+use iceberg::spec::{TableMetadata, ManifestList, Manifest};
 use url::Url;
 use tracing::{debug, instrument};
-use crate::cli::AtCommands;
+use crate::cli::{AtCommands, SnapshotCmd};
+
+#[derive(Debug)]
+pub enum FileType {
+    Metadata,
+    ManifestList,
+    Manifest,
+    Data,
+}
 
 #[instrument(skip(client))]
 pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, command: AtCommands) -> Result<String> {
@@ -24,14 +32,14 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
 
             let schema = metadata.schema_by_id(id)
                 .ok_or_else(|| anyhow::anyhow!("Schema {} not found", id))?;
-            
+
             serde_json::to_string_pretty(schema)?
         },
         AtCommands::Snapshots => {
             let snapshots: Vec<_> = metadata.snapshots().collect();
             serde_json::to_string_pretty(&snapshots)?
         },
-        AtCommands::Snapshot { snapshot_id } => {
+        AtCommands::Snapshot { snapshot_id, command } => {
             let id = if snapshot_id == "current" {
                 metadata.current_snapshot_id()
                     .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?
@@ -44,15 +52,67 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
                 .find(|s| s.snapshot_id() == id)
                 .ok_or_else(|| anyhow::anyhow!("Snapshot {} not found", id))?;
 
-            serde_json::to_string_pretty(snapshot)?
+            match command {
+                None => serde_json::to_string_pretty(snapshot)?,
+                Some(SnapshotCmd::Files) => {
+                    println!("metadata {}", location);
+                    iterate_files(client, snapshot, metadata.format_version(), |file_type, path| {
+                        let type_str = match file_type {
+                            FileType::Metadata => "metadata",
+                            FileType::ManifestList => "manifest-list",
+                            FileType::Manifest => "manifest",
+                            FileType::Data => "data",
+                        };
+                        println!("{} {}", type_str, path);
+                    }).await?;
+                    // We return an empty string because we've already printed to stdout
+                    String::new()
+                }
+            }
         }
     };
 
     Ok(output)
 }
 
-#[instrument(skip(client))]
-pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Result<TableMetadata> {
+#[instrument(skip(client, callback))]
+async fn iterate_files<F>(
+    client: &aws_sdk_s3::Client,
+    snapshot: &iceberg::spec::Snapshot,
+    format_version: iceberg::spec::FormatVersion,
+    mut callback: F
+) -> Result<()>
+where F: FnMut(FileType, &str)
+{
+    let manifest_list_location = snapshot.manifest_list();
+    callback(FileType::ManifestList, manifest_list_location);
+    debug!("fetching manifest list from {}", manifest_list_location);
+
+    let manifest_list_bytes = fetch_bytes(client, manifest_list_location).await?;
+    let manifest_list = ManifestList::parse_with_version(&manifest_list_bytes, format_version)
+        .context("Failed to parse manifest list")?;
+
+    for manifest_file in manifest_list.entries() {
+        let manifest_location = manifest_file.manifest_path.clone();
+        callback(FileType::Manifest, &manifest_location);
+        debug!("fetching manifest from {}", manifest_location);
+
+        let manifest_bytes = fetch_bytes(client, &manifest_location).await?;
+        let manifest = Manifest::parse_avro(manifest_bytes.as_slice())
+            .context("Failed to parse manifest")?;
+
+        for entry in manifest.entries() {
+            // Only list added or existing files
+            if entry.status() == iceberg::spec::ManifestStatus::Added || entry.status() == iceberg::spec::ManifestStatus::Existing {
+                callback(FileType::Data, entry.data_file().file_path());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn fetch_bytes(client: &aws_sdk_s3::Client, location: &str) -> Result<Vec<u8>> {
     // We use the `url` crate to parse the S3 URI.
     let url = Url::parse(location).context("Failed to parse URL")?;
 
@@ -63,8 +123,6 @@ pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Resu
     let bucket = url.host_str().context("Missing bucket in S3 URL")?;
     let key = url.path().trim_start_matches('/');
 
-    debug!(bucket, key, "fetching metadata from s3");
-
     let response = client.get_object()
         .bucket(bucket)
         .key(key)
@@ -72,9 +130,13 @@ pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Resu
         .await
         .with_context(|| format!("Failed to fetch S3 object at s3://{}/{}", bucket, key))?;
 
-    debug!("successfully fetched metadata, reading body");
+    Ok(response.body.collect().await?.into_bytes().to_vec())
+}
 
-    let bytes = response.body.collect().await?.into_bytes();
+#[instrument(skip(client))]
+pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Result<TableMetadata> {
+    debug!(location, "fetching metadata");
+    let bytes = fetch_bytes(client, location).await?;
 
     let metadata: TableMetadata = serde_json::from_slice(&bytes)
         .context("Failed to parse Iceberg table metadata")?;
@@ -112,7 +174,7 @@ mod tests {
             .http_client(http_client)
             .credentials_provider(Credentials::for_tests())
             .build();
-            
+
         aws_sdk_s3::Client::from_conf(config)
     }
 
@@ -167,7 +229,7 @@ mod tests {
         let metadata_json = minimal_metadata();
         let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
-        
+
         let metadata = fetch_metadata(&client, location).await?;
 
         assert_eq!(metadata.format_version(), iceberg::spec::FormatVersion::V2);
@@ -183,7 +245,7 @@ mod tests {
         let location = "s3://bucket/table/metadata.json";
 
         let output = handle_at_command(&client, location, AtCommands::Schema { schema_id: "current".to_string() }).await?;
-        
+
         // Verify output contains schema fields
         assert!(output.contains("\"name\": \"id\""));
         assert!(output.contains("\"type\": \"int\""));
@@ -197,7 +259,7 @@ mod tests {
         let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
 
-        let output = handle_at_command(&client, location, AtCommands::Snapshot { snapshot_id: "current".to_string() }).await?;
+        let output = handle_at_command(&client, location, AtCommands::Snapshot { snapshot_id: "current".to_string(), command: None }).await?;
 
         // Verify output contains snapshot details
         assert!(output.contains("\"snapshot-id\": 123"));
