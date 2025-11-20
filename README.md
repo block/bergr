@@ -1,37 +1,53 @@
-# bergr README
+# bergr
 
-Congrats, project leads! You got a new project to grow!
+`bergr` is a lightweight utility for inspecting [Apache Iceberg](https://iceberg.apache.org/) tables.
 
-This stub is meant to help you form a strong community around your work. It's yours to adapt, and may 
-diverge from this initial structure. Just keep the files seeded in this repo, and the rest is yours to evolve! 
+It provides both a Command Line Interface (CLI) and a RESTful API to explore your Iceberg catalogs, namespaces, and tables.
 
-## Introduction
+## Features
 
-Orient users to the project here. This is a good place to start with an assumption
-that the user knows very little - so start with the Big Picture and show how this
-project fits into it.
+- **Explore Catalogs**: List namespaces and tables.
+- **Inspect Tables**: View table metadata, schemas, and file lists.
+- **REST API**: Serve table information over HTTP for integration with other tools or for easy browsing.
+- **CLI**: Quick access to table details directly from your terminal.
 
-Then maybe a dive into what this project does.
+## Installation
 
-Diagrams and other visuals are helpful here. Perhaps code snippets showing usage.
+(Coming soon)
 
-Project leads should complete, alongside this `README`:
-* [CODEOWNERS](./CODEOWNERS) - set project lead(s)
-* [CONTRIBUTING.md](./CONTRIBUTING.md) - Fill out how to: install prereqs, build, test, run, access CI, chat, discuss, file issues
-* [Bug-report.md](.github/ISSUE_TEMPLATE/bug-report.md) - Fill out `Assignees` add codeowners @names
-* [config.yml](.github/ISSUE_TEMPLATE/config.yml) - remove "(/add your discord channel..)" and replace the url with your Discord channel if applicable
+## Usage
 
-The other files in this template repo may be used as-is:
-* [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
-* [GOVERNANCE.md](./GOVERNANCE.md)
-* [LICENSE](./LICENSE)
+### CLI
 
-## Project Resources
+```bash
+# List namespaces
+bergr namespaces
 
-| Resource                                   | Description                                                                    |
-| ------------------------------------------ | ------------------------------------------------------------------------------ |
-| [CODEOWNERS](./CODEOWNERS)                 | Outlines the project lead(s)                                                   |
-| [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) | Expected behavior for project contributors, promoting a welcoming environment |
-| [CONTRIBUTING.md](./CONTRIBUTING.md)       | Developer guide to build, test, run, access CI, chat, discuss, file issues     |
-| [GOVERNANCE.md](./GOVERNANCE.md)           | Project governance                                                             |
-| [LICENSE](./LICENSE)                       | Apache License, Version 2.0                                                    |
+# List tables in a namespace
+bergr namespace <namespace> tables
+
+# Inspect a table
+bergr namespace <namespace> table <table> metadata
+bergr namespace <namespace> table <table> schema
+bergr namespace <namespace> table <table> files
+```
+
+### Server
+
+Start the REST API server:
+
+```bash
+bergr serve --port 8080
+```
+
+Endpoints:
+- `GET /namespaces`
+- `GET /namespace/{namespace}/tables`
+- `GET /namespace/{namespace}/table/{table}`
+- `GET /namespace/{namespace}/table/{table}/metadata`
+- `GET /namespace/{namespace}/table/{table}/schema`
+- `GET /namespace/{namespace}/table/{table}/files`
+
+## License
+
+[Apache License, Version 2.0](LICENSE)
