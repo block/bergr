@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use iceberg::spec::TableMetadata;
 use url::Url;
+use tracing::{debug, instrument};
 
+#[instrument(skip(client))]
 pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Result<TableMetadata> {
     // We use the `url` crate to parse the S3 URI.
     let url = Url::parse(location).context("Failed to parse URL")?;
@@ -13,6 +15,8 @@ pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Resu
     let bucket = url.host_str().context("Missing bucket in S3 URL")?;
     let key = url.path().trim_start_matches('/');
 
+    debug!(bucket, key, "fetching metadata from s3");
+
     let response = client.get_object()
         .bucket(bucket)
         .key(key)
@@ -20,10 +24,14 @@ pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Resu
         .await
         .with_context(|| format!("Failed to fetch S3 object at s3://{}/{}", bucket, key))?;
 
+    debug!("successfully fetched metadata, reading body");
+
     let bytes = response.body.collect().await?.into_bytes();
 
     let metadata: TableMetadata = serde_json::from_slice(&bytes)
         .context("Failed to parse Iceberg table metadata")?;
+
+    debug!("successfully parsed table metadata");
 
     Ok(metadata)
 }
