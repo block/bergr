@@ -1,4 +1,4 @@
-# $PROJECT_NAME README
+# bergr README
 
 Congrats, project leads! You got a new project to grow!
 
