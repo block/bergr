@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use iceberg::spec::{TableMetadata, ManifestList, Manifest};
 use url::Url;
-use tracing::{debug, instrument};
+use tracing::instrument;
 use crate::cli::{AtCommands, SnapshotCmd};
+use futures::{stream, Stream, StreamExt};
+use async_stream::try_stream;
 
 #[derive(Debug)]
 pub enum FileType {
@@ -56,7 +58,11 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
                 None => serde_json::to_string_pretty(snapshot)?,
                 Some(SnapshotCmd::Files) => {
                     println!("metadata {}", location);
-                    iterate_files(client, snapshot, metadata.format_version(), |file_type, path| {
+                    let stream = iterate_files(client, snapshot, metadata.format_version());
+                    tokio::pin!(stream);
+
+                    while let Some(result) = stream.next().await {
+                        let (file_type, path) = result?;
                         let type_str = match file_type {
                             FileType::Metadata => "metadata",
                             FileType::ManifestList => "manifest-list",
@@ -64,7 +70,7 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
                             FileType::Data => "data",
                         };
                         println!("{} {}", type_str, path);
-                    }).await?;
+                    }
                     // We return an empty string because we've already printed to stdout
                     String::new()
                 }
@@ -75,41 +81,46 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
     Ok(output)
 }
 
-#[instrument(skip(client, callback))]
-async fn iterate_files<F>(
-    client: &aws_sdk_s3::Client,
-    snapshot: &iceberg::spec::Snapshot,
+#[instrument(skip(client))]
+fn iterate_files<'a>(
+    client: &'a aws_sdk_s3::Client,
+    snapshot: &'a iceberg::spec::Snapshot,
     format_version: iceberg::spec::FormatVersion,
-    mut callback: F
-) -> Result<()>
-where F: FnMut(FileType, &str)
-{
-    let manifest_list_location = snapshot.manifest_list();
-    callback(FileType::ManifestList, manifest_list_location);
-    debug!("fetching manifest list from {}", manifest_list_location);
+) -> impl Stream<Item = Result<(FileType, String)>> + 'a {
+    try_stream! {
+        let manifest_list_location = snapshot.manifest_list();
+        yield (FileType::ManifestList, manifest_list_location.to_string());
 
-    let manifest_list_bytes = fetch_bytes(client, manifest_list_location).await?;
-    let manifest_list = ManifestList::parse_with_version(&manifest_list_bytes, format_version)
-        .context("Failed to parse manifest list")?;
+        let manifest_list_bytes = fetch_bytes(client, manifest_list_location).await?;
+        let manifest_list = ManifestList::parse_with_version(&manifest_list_bytes, format_version)
+            .context("Failed to parse manifest list")?;
 
-    for manifest_file in manifest_list.entries() {
-        let manifest_location = manifest_file.manifest_path.clone();
-        callback(FileType::Manifest, &manifest_location);
-        debug!("fetching manifest from {}", manifest_location);
+        let tasks = manifest_list.entries().iter().map(|manifest_file| {
+            let manifest_location = manifest_file.manifest_path.clone();
+            let client = client.clone();
+            async move {
+                let bytes_result = fetch_bytes(&client, &manifest_location).await;
+                (manifest_location, bytes_result)
+            }
+        });
 
-        let manifest_bytes = fetch_bytes(client, &manifest_location).await?;
-        let manifest = Manifest::parse_avro(manifest_bytes.as_slice())
-            .context("Failed to parse manifest")?;
+        let mut stream = stream::iter(tasks).buffered(7);
 
-        for entry in manifest.entries() {
-            // Only list added or existing files
-            if entry.status() == iceberg::spec::ManifestStatus::Added || entry.status() == iceberg::spec::ManifestStatus::Existing {
-                callback(FileType::Data, entry.data_file().file_path());
+        while let Some((manifest_location, bytes_result)) = stream.next().await {
+            yield (FileType::Manifest, manifest_location.clone());
+
+            let manifest_bytes = bytes_result?;
+            let manifest = Manifest::parse_avro(manifest_bytes.as_slice())
+                .context("Failed to parse manifest")?;
+
+            for entry in manifest.entries() {
+                // Only list added or existing files
+                if entry.status() == iceberg::spec::ManifestStatus::Added || entry.status() == iceberg::spec::ManifestStatus::Existing {
+                    yield (FileType::Data, entry.data_file().file_path().to_string());
+                }
             }
         }
     }
-
-    Ok(())
 }
 
 async fn fetch_bytes(client: &aws_sdk_s3::Client, location: &str) -> Result<Vec<u8>> {
@@ -135,13 +146,10 @@ async fn fetch_bytes(client: &aws_sdk_s3::Client, location: &str) -> Result<Vec<
 
 #[instrument(skip(client))]
 pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Result<TableMetadata> {
-    debug!(location, "fetching metadata");
     let bytes = fetch_bytes(client, location).await?;
 
     let metadata: TableMetadata = serde_json::from_slice(&bytes)
         .context("Failed to parse Iceberg table metadata")?;
-
-    debug!("successfully parsed table metadata");
 
     Ok(metadata)
 }

@@ -5,12 +5,14 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+async-stream = "0.3.6"
 aws-config = "1.8.11"
 aws-credential-types = { version = "1.2.10", features = ["test-util"] }
 aws-sdk-s3 = "1.114.0"
 aws-smithy-runtime = { version = "1.9.4", features = ["test-util"] }
 aws-smithy-runtime-api = { version = "1.9.2", features = ["test-util"] }
 clap = { version = "4.5.53", features = ["derive"] }
+futures = "0.3.31"
 http = "1.3.1"
 iceberg = "0.7.0"
 serde = { version = "1.0.228", features = ["derive"] }
