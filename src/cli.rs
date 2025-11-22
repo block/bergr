@@ -20,12 +20,12 @@ pub enum Commands {
         location: String,
 
         #[command(subcommand)]
-        command: AtCommands,
+        command: TableCommands,
     },
 }
 
 #[derive(Subcommand, Debug)]
-pub enum AtCommands {
+pub enum TableCommands {
     /// Print the table metadata
     Metadata,
     /// List all schemas

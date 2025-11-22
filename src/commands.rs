@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use iceberg::spec::{TableMetadata, ManifestList, Manifest};
 use url::Url;
 use tracing::instrument;
-use crate::cli::{AtCommands, SnapshotCmd};
+use crate::cli::{TableCommands, SnapshotCmd};
 use futures::{stream, Stream, StreamExt};
 use async_stream::try_stream;
 
@@ -15,16 +15,16 @@ pub enum FileType {
 }
 
 #[instrument(skip(client))]
-pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, command: AtCommands) -> Result<String> {
+pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, command: TableCommands) -> Result<String> {
     let metadata = fetch_metadata(client, location).await?;
 
     let output = match command {
-        AtCommands::Metadata => serde_json::to_string_pretty(&metadata)?,
-        AtCommands::Schemas => {
+        TableCommands::Metadata => serde_json::to_string_pretty(&metadata)?,
+        TableCommands::Schemas => {
             let schemas: Vec<_> = metadata.schemas_iter().collect();
             serde_json::to_string_pretty(&schemas)?
         },
-        AtCommands::Schema { schema_id } => {
+        TableCommands::Schema { schema_id } => {
             let id = if schema_id == "current" {
                 metadata.current_schema_id()
             } else {
@@ -37,11 +37,11 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
 
             serde_json::to_string_pretty(schema)?
         },
-        AtCommands::Snapshots => {
+        TableCommands::Snapshots => {
             let snapshots: Vec<_> = metadata.snapshots().collect();
             serde_json::to_string_pretty(&snapshots)?
         },
-        AtCommands::Snapshot { snapshot_id, command } => {
+        TableCommands::Snapshot { snapshot_id, command } => {
             let id = if snapshot_id == "current" {
                 metadata.current_snapshot_id()
                     .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?
@@ -252,7 +252,7 @@ mod tests {
         let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
 
-        let output = handle_at_command(&client, location, AtCommands::Schema { schema_id: "current".to_string() }).await?;
+        let output = handle_at_command(&client, location, TableCommands::Schema { schema_id: "current".to_string() }).await?;
 
         // Verify output contains schema fields
         assert!(output.contains("\"name\": \"id\""));
@@ -267,7 +267,7 @@ mod tests {
         let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
 
-        let output = handle_at_command(&client, location, AtCommands::Snapshot { snapshot_id: "current".to_string(), command: None }).await?;
+        let output = handle_at_command(&client, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }).await?;
 
         // Verify output contains snapshot details
         assert!(output.contains("\"snapshot-id\": 123"));
