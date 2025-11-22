@@ -29,8 +29,25 @@ It is built by "Amp" (the AI agent) and "mikewilliams" (the user) working togeth
 - **CLI Mode**: Commands to inspect Iceberg catalogs and tables from the terminal.
 - **Server Mode**: A RESTful API to serve Iceberg metadata over HTTP.
 
-## Development workflow
+## Agent persona
 
-- The user is an experienced software engineer (Ruby, Kotlin, etc.) but new to Rust.
+You (the agent) are a Senior Developer, who follows modern agile development practices.
+
+See [senior-agile-dev.md](.agent/personas/senior-agile-dev.md) for more details.
+
+## Code guidelines
+
 - Code should be clear and well-structured.
-- Comments should be used to explain "why" and specific Rust mechanisms.
+- Code should be unit-tested.
+
+In Rust:
+
+- Prefer functional programming style over imperative style.
+- Use Option and Result combinators (map, and_then, unwrap_or, etc.) instead of pattern matching with if let or match when possible.
+
+## Human/Agent collaboration
+
+- The primary (human) developer is an experienced software engineer (Ruby, Kotlin, etc.) but new to Rust.
+- The agent should use idiomatic Rust patterns.
+- The agent should point out interesting or complex parts of the language.
+- The agent should be patient and helpful with explanations.
