@@ -17,7 +17,10 @@ pub enum FileType {
 #[instrument(skip(client))]
 pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, command: TableCommands) -> Result<String> {
     let metadata = fetch_metadata(client, location).await?;
+    handle_table_command(client, &metadata, command).await
+}
 
+pub async fn handle_table_command(client: &aws_sdk_s3::Client, metadata: &TableMetadata, command: TableCommands) -> Result<String> {
     let output = match command {
         TableCommands::Metadata => serde_json::to_string_pretty(&metadata)?,
         TableCommands::Schemas => {
@@ -57,7 +60,7 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
             match command {
                 None => serde_json::to_string_pretty(snapshot)?,
                 Some(SnapshotCmd::Files) => {
-                    println!("metadata {}", location);
+                    println!("metadata {}", metadata.location());
                     let stream = iterate_files(client, snapshot, metadata.format_version());
                     tokio::pin!(stream);
 
