@@ -8,7 +8,7 @@ anyhow = "1.0.100"
 async-stream = "0.3.6"
 aws-config = "1.8.11"
 aws-credential-types = { version = "1.2.10", features = ["test-util"] }
-aws-sdk-s3 = "1.114.0"
+aws-sdk-s3 = { version = "1.114.0", features = ["test-util"] }
 aws-smithy-runtime = { version = "1.9.4", features = ["test-util"] }
 aws-smithy-runtime-api = { version = "1.9.2", features = ["test-util"] }
 clap = { version = "4.5.53", features = ["derive"] }
@@ -21,3 +21,6 @@ tokio = { version = "1.48.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 url = "2.5.7"
+
+[dev-dependencies]
+aws-smithy-mocks = "0.2.1"

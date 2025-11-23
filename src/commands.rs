@@ -160,33 +160,22 @@ pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aws_smithy_runtime::client::http::test_util::StaticReplayClient;
-    use aws_sdk_s3::config::Region;
-    use aws_credential_types::Credentials;
-    use aws_config::BehaviorVersion;
+    use aws_smithy_mocks::{mock, mock_client};
+    use aws_sdk_s3::primitives::ByteStream;
 
     fn create_mock_client(metadata_json: &str) -> aws_sdk_s3::Client {
-        let http_client = StaticReplayClient::new(vec![
-            aws_smithy_runtime::client::http::test_util::ReplayEvent::new(
-                http::Request::builder()
-                    .uri("https://s3.us-east-1.amazonaws.com/bucket/table/metadata.json")
-                    .body(aws_sdk_s3::primitives::SdkBody::empty())
-                    .unwrap(),
-                http::Response::builder()
-                    .status(200)
-                    .body(aws_sdk_s3::primitives::SdkBody::from(metadata_json.to_string()))
-                    .unwrap(),
-            )
-        ]);
+        let metadata_json = metadata_json.to_string();
+        let get_object_rule = mock!(aws_sdk_s3::Client::get_object)
+            .match_requests(|req| {
+                req.bucket() == Some("bucket") && req.key() == Some("table/metadata.json")
+            })
+            .then_output(move || {
+                aws_sdk_s3::operation::get_object::GetObjectOutput::builder()
+                    .body(ByteStream::from(metadata_json.as_bytes().to_vec()))
+                    .build()
+            });
 
-        let config = aws_sdk_s3::Config::builder()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
-            .http_client(http_client)
-            .credentials_provider(Credentials::for_tests())
-            .build();
-
-        aws_sdk_s3::Client::from_conf(config)
+        mock_client!(aws_sdk_s3, [&get_object_rule])
     }
 
     fn minimal_metadata() -> String {
