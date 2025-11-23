@@ -45,8 +45,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::At { location, command } => {
             let file_io = build_file_io(&location).await?;
-            let output = handle_at_command(&file_io, &location, command).await?;
-            println!("{}", output);
+            handle_at_command(&file_io, &location, command).await?;
         }
     }
 

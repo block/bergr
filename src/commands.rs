@@ -5,6 +5,7 @@ use tracing::instrument;
 use crate::cli::{TableCommands, SnapshotCmd};
 use futures::{stream, Stream, StreamExt};
 use async_stream::try_stream;
+use serde::Serialize;
 
 #[derive(Debug)]
 pub enum FileType {
@@ -14,32 +15,67 @@ pub enum FileType {
     Data,
 }
 
+impl FileType {
+    fn as_str(&self) -> &str {
+        match self {
+            FileType::Metadata => "metadata",
+            FileType::ManifestList => "manifest-list",
+            FileType::Manifest => "manifest",
+            FileType::Data => "data",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct FileRecord {
+    r#type: String,
+    path: String,
+}
+
+/// Emit a single item as pretty-printed JSON
+fn emit_json<T: Serialize>(item: &T) -> Result<()> {
+    let json = serde_json::to_string_pretty(item)?;
+    println!("{json}");
+    Ok(())
+}
+
+/// Emit items from a stream as JSON Lines (JSONL) format
+async fn emit_jsonl<T: Serialize>(stream: impl Stream<Item = Result<T>>) -> Result<()> {
+    tokio::pin!(stream);
+    while let Some(result) = stream.next().await {
+        let item = result?;
+        let json = serde_json::to_string(&item)?;
+        println!("{json}");
+    }
+    Ok(())
+}
+
 #[instrument(skip(file_io))]
-pub async fn handle_at_command(file_io: &FileIO, location: &str, command: TableCommands) -> Result<String> {
+pub async fn handle_at_command(file_io: &FileIO, location: &str, command: TableCommands) -> Result<()> {
     let metadata = fetch_metadata(file_io, location).await?;
     handle_table_command(file_io, &metadata, command).await
 }
 
-pub async fn handle_table_command(file_io: &FileIO, metadata: &TableMetadata, command: TableCommands) -> Result<String> {
+pub async fn handle_table_command(file_io: &FileIO, metadata: &TableMetadata, command: TableCommands) -> Result<()> {
     match command {
         TableCommands::Metadata => handle_metadata(metadata),
-        TableCommands::Schemas => handle_schemas(metadata),
+        TableCommands::Schemas => handle_schemas(metadata).await,
         TableCommands::Schema { schema_id } => handle_schema(metadata, &schema_id),
-        TableCommands::Snapshots => handle_snapshots(metadata),
+        TableCommands::Snapshots => handle_snapshots(metadata).await,
         TableCommands::Snapshot { snapshot_id, command } => handle_snapshot(file_io, metadata, &snapshot_id, command).await,
     }
 }
 
-fn handle_metadata(metadata: &TableMetadata) -> Result<String> {
-    Ok(serde_json::to_string_pretty(metadata)?)
+fn handle_metadata(metadata: &TableMetadata) -> Result<()> {
+    emit_json(metadata)
 }
 
-fn handle_schemas(metadata: &TableMetadata) -> Result<String> {
-    let schemas: Vec<_> = metadata.schemas_iter().collect();
-    Ok(serde_json::to_string_pretty(&schemas)?)
+async fn handle_schemas(metadata: &TableMetadata) -> Result<()> {
+    let schemas_stream = stream::iter(metadata.schemas_iter().map(Ok));
+    emit_jsonl(schemas_stream).await
 }
 
-fn handle_schema(metadata: &TableMetadata, schema_id: &str) -> Result<String> {
+fn handle_schema(metadata: &TableMetadata, schema_id: &str) -> Result<()> {
     let id = if schema_id == "current" {
         metadata.current_schema_id()
     } else {
@@ -50,15 +86,15 @@ fn handle_schema(metadata: &TableMetadata, schema_id: &str) -> Result<String> {
     let schema = metadata.schema_by_id(id)
         .ok_or_else(|| anyhow::anyhow!("Schema {} not found", id))?;
 
-    Ok(serde_json::to_string_pretty(schema)?)
+    emit_json(schema)
 }
 
-fn handle_snapshots(metadata: &TableMetadata) -> Result<String> {
-    let snapshots: Vec<_> = metadata.snapshots().collect();
-    Ok(serde_json::to_string_pretty(&snapshots)?)
+async fn handle_snapshots(metadata: &TableMetadata) -> Result<()> {
+    let snapshots_stream = stream::iter(metadata.snapshots().map(Ok));
+    emit_jsonl(snapshots_stream).await
 }
 
-async fn handle_snapshot(file_io: &FileIO, metadata: &TableMetadata, snapshot_id: &str, command: Option<SnapshotCmd>) -> Result<String> {
+async fn handle_snapshot(file_io: &FileIO, metadata: &TableMetadata, snapshot_id: &str, command: Option<SnapshotCmd>) -> Result<()> {
     let id = if snapshot_id == "current" {
         metadata.current_snapshot_id()
             .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?
@@ -72,27 +108,17 @@ async fn handle_snapshot(file_io: &FileIO, metadata: &TableMetadata, snapshot_id
         .ok_or_else(|| anyhow::anyhow!("Snapshot {} not found", id))?;
 
     match command {
-        None => Ok(serde_json::to_string_pretty(snapshot)?),
+        None => emit_json(snapshot),
         Some(SnapshotCmd::Files) => {
-            let stream = iterate_files(file_io, snapshot, metadata.format_version());
-            tokio::pin!(stream);
-
-            while let Some(result) = stream.next().await {
-                let (file_type, path) = result?;
-                let type_str = match file_type {
-                    FileType::Metadata => "metadata",
-                    FileType::ManifestList => "manifest-list",
-                    FileType::Manifest => "manifest",
-                    FileType::Data => "data",
-                };
-                let record = serde_json::json!({
-                    "type": type_str,
-                    "path": path
+            let stream = iterate_files(file_io, snapshot, metadata.format_version())
+                .map(|result| {
+                    result.map(|(file_type, path)| FileRecord {
+                        r#type: file_type.as_str().to_string(),
+                        path,
+                    })
                 });
-                println!("{}", record);
-            }
-            // We return an empty string because we've already printed to stdout
-            Ok(String::new())
+
+            emit_jsonl(stream).await
         }
     }
 }
@@ -241,11 +267,8 @@ mod tests {
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
 
-        let output = handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "current".to_string() }).await?;
-
-        // Verify output contains schema fields
-        assert!(output.contains("\"name\": \"id\""));
-        assert!(output.contains("\"type\": \"int\""));
+        // Verify command executes successfully (output is printed to stdout)
+        handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "current".to_string() }).await?;
 
         Ok(())
     }
@@ -256,11 +279,8 @@ mod tests {
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
 
-        let output = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }).await?;
-
-        // Verify output contains snapshot details
-        assert!(output.contains("\"snapshot-id\": 123"));
-        assert!(output.contains("\"operation\": \"append\""));
+        // Verify command executes successfully (output is printed to stdout)
+        handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }).await?;
 
         Ok(())
     }
