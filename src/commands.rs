@@ -21,67 +21,77 @@ pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, comm
 }
 
 pub async fn handle_table_command(client: &aws_sdk_s3::Client, metadata: &TableMetadata, command: TableCommands) -> Result<String> {
-    let output = match command {
-        TableCommands::Metadata => serde_json::to_string_pretty(&metadata)?,
-        TableCommands::Schemas => {
-            let schemas: Vec<_> = metadata.schemas_iter().collect();
-            serde_json::to_string_pretty(&schemas)?
-        },
-        TableCommands::Schema { schema_id } => {
-            let id = if schema_id == "current" {
-                metadata.current_schema_id()
-            } else {
-                schema_id.parse::<i32>()
-                    .context("Schema ID must be an integer")?
-            };
+    match command {
+        TableCommands::Metadata => handle_metadata(metadata),
+        TableCommands::Schemas => handle_schemas(metadata),
+        TableCommands::Schema { schema_id } => handle_schema(metadata, &schema_id),
+        TableCommands::Snapshots => handle_snapshots(metadata),
+        TableCommands::Snapshot { snapshot_id, command } => handle_snapshot(client, metadata, &snapshot_id, command).await,
+    }
+}
 
-            let schema = metadata.schema_by_id(id)
-                .ok_or_else(|| anyhow::anyhow!("Schema {} not found", id))?;
+fn handle_metadata(metadata: &TableMetadata) -> Result<String> {
+    Ok(serde_json::to_string_pretty(metadata)?)
+}
 
-            serde_json::to_string_pretty(schema)?
-        },
-        TableCommands::Snapshots => {
-            let snapshots: Vec<_> = metadata.snapshots().collect();
-            serde_json::to_string_pretty(&snapshots)?
-        },
-        TableCommands::Snapshot { snapshot_id, command } => {
-            let id = if snapshot_id == "current" {
-                metadata.current_snapshot_id()
-                    .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?
-            } else {
-                snapshot_id.parse::<i64>()
-                    .context("Snapshot ID must be an integer")?
-            };
+fn handle_schemas(metadata: &TableMetadata) -> Result<String> {
+    let schemas: Vec<_> = metadata.schemas_iter().collect();
+    Ok(serde_json::to_string_pretty(&schemas)?)
+}
 
-            let snapshot = metadata.snapshots()
-                .find(|s| s.snapshot_id() == id)
-                .ok_or_else(|| anyhow::anyhow!("Snapshot {} not found", id))?;
-
-            match command {
-                None => serde_json::to_string_pretty(snapshot)?,
-                Some(SnapshotCmd::Files) => {
-                    println!("metadata {}", metadata.location());
-                    let stream = iterate_files(client, snapshot, metadata.format_version());
-                    tokio::pin!(stream);
-
-                    while let Some(result) = stream.next().await {
-                        let (file_type, path) = result?;
-                        let type_str = match file_type {
-                            FileType::Metadata => "metadata",
-                            FileType::ManifestList => "manifest-list",
-                            FileType::Manifest => "manifest",
-                            FileType::Data => "data",
-                        };
-                        println!("{} {}", type_str, path);
-                    }
-                    // We return an empty string because we've already printed to stdout
-                    String::new()
-                }
-            }
-        }
+fn handle_schema(metadata: &TableMetadata, schema_id: &str) -> Result<String> {
+    let id = if schema_id == "current" {
+        metadata.current_schema_id()
+    } else {
+        schema_id.parse::<i32>()
+            .context("Schema ID must be an integer")?
     };
 
-    Ok(output)
+    let schema = metadata.schema_by_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Schema {} not found", id))?;
+
+    Ok(serde_json::to_string_pretty(schema)?)
+}
+
+fn handle_snapshots(metadata: &TableMetadata) -> Result<String> {
+    let snapshots: Vec<_> = metadata.snapshots().collect();
+    Ok(serde_json::to_string_pretty(&snapshots)?)
+}
+
+async fn handle_snapshot(client: &aws_sdk_s3::Client, metadata: &TableMetadata, snapshot_id: &str, command: Option<SnapshotCmd>) -> Result<String> {
+    let id = if snapshot_id == "current" {
+        metadata.current_snapshot_id()
+            .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?
+    } else {
+        snapshot_id.parse::<i64>()
+            .context("Snapshot ID must be an integer")?
+    };
+
+    let snapshot = metadata.snapshots()
+        .find(|s| s.snapshot_id() == id)
+        .ok_or_else(|| anyhow::anyhow!("Snapshot {} not found", id))?;
+
+    match command {
+        None => Ok(serde_json::to_string_pretty(snapshot)?),
+        Some(SnapshotCmd::Files) => {
+            println!("metadata {}", metadata.location());
+            let stream = iterate_files(client, snapshot, metadata.format_version());
+            tokio::pin!(stream);
+
+            while let Some(result) = stream.next().await {
+                let (file_type, path) = result?;
+                let type_str = match file_type {
+                    FileType::Metadata => "metadata",
+                    FileType::ManifestList => "manifest-list",
+                    FileType::Manifest => "manifest",
+                    FileType::Data => "data",
+                };
+                println!("{} {}", type_str, path);
+            }
+            // We return an empty string because we've already printed to stdout
+            Ok(String::new())
+        }
+    }
 }
 
 #[instrument(skip(client))]
