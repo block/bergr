@@ -74,7 +74,6 @@ async fn handle_snapshot(file_io: &FileIO, metadata: &TableMetadata, snapshot_id
     match command {
         None => Ok(serde_json::to_string_pretty(snapshot)?),
         Some(SnapshotCmd::Files) => {
-            println!("metadata {}", metadata.location());
             let stream = iterate_files(file_io, snapshot, metadata.format_version());
             tokio::pin!(stream);
 
@@ -86,7 +85,11 @@ async fn handle_snapshot(file_io: &FileIO, metadata: &TableMetadata, snapshot_id
                     FileType::Manifest => "manifest",
                     FileType::Data => "data",
                 };
-                println!("{} {}", type_str, path);
+                let record = serde_json::json!({
+                    "type": type_str,
+                    "path": path
+                });
+                println!("{}", record);
             }
             // We return an empty string because we've already printed to stdout
             Ok(String::new())
@@ -159,14 +162,14 @@ mod tests {
 
     async fn create_memory_file_io(files: Vec<(&str, &str)>) -> FileIO {
         let file_io = FileIOBuilder::new("memory").build().unwrap();
-        
+
         for (path, content) in files {
             let output_file = file_io.new_output(path).unwrap();
             let mut writer = output_file.writer().await.unwrap();
             writer.write(bytes::Bytes::from(content.to_string())).await.unwrap();
             writer.close().await.unwrap();
         }
-        
+
         file_io
     }
 
@@ -220,7 +223,7 @@ mod tests {
     async fn test_fetch_metadata() -> Result<()> {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
-        
+
         // Note: memory backend ignores the scheme (s3://) and treats path as key
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
 
