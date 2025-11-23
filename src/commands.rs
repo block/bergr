@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use iceberg::spec::{TableMetadata, ManifestList, Manifest};
-use url::Url;
+use iceberg::io::FileIO;
 use tracing::instrument;
 use crate::cli::{TableCommands, SnapshotCmd};
 use futures::{stream, Stream, StreamExt};
@@ -14,19 +14,19 @@ pub enum FileType {
     Data,
 }
 
-#[instrument(skip(client))]
-pub async fn handle_at_command(client: &aws_sdk_s3::Client, location: &str, command: TableCommands) -> Result<String> {
-    let metadata = fetch_metadata(client, location).await?;
-    handle_table_command(client, &metadata, command).await
+#[instrument(skip(file_io))]
+pub async fn handle_at_command(file_io: &FileIO, location: &str, command: TableCommands) -> Result<String> {
+    let metadata = fetch_metadata(file_io, location).await?;
+    handle_table_command(file_io, &metadata, command).await
 }
 
-pub async fn handle_table_command(client: &aws_sdk_s3::Client, metadata: &TableMetadata, command: TableCommands) -> Result<String> {
+pub async fn handle_table_command(file_io: &FileIO, metadata: &TableMetadata, command: TableCommands) -> Result<String> {
     match command {
         TableCommands::Metadata => handle_metadata(metadata),
         TableCommands::Schemas => handle_schemas(metadata),
         TableCommands::Schema { schema_id } => handle_schema(metadata, &schema_id),
         TableCommands::Snapshots => handle_snapshots(metadata),
-        TableCommands::Snapshot { snapshot_id, command } => handle_snapshot(client, metadata, &snapshot_id, command).await,
+        TableCommands::Snapshot { snapshot_id, command } => handle_snapshot(file_io, metadata, &snapshot_id, command).await,
     }
 }
 
@@ -58,7 +58,7 @@ fn handle_snapshots(metadata: &TableMetadata) -> Result<String> {
     Ok(serde_json::to_string_pretty(&snapshots)?)
 }
 
-async fn handle_snapshot(client: &aws_sdk_s3::Client, metadata: &TableMetadata, snapshot_id: &str, command: Option<SnapshotCmd>) -> Result<String> {
+async fn handle_snapshot(file_io: &FileIO, metadata: &TableMetadata, snapshot_id: &str, command: Option<SnapshotCmd>) -> Result<String> {
     let id = if snapshot_id == "current" {
         metadata.current_snapshot_id()
             .ok_or_else(|| anyhow::anyhow!("Table has no current snapshot"))?
@@ -75,7 +75,7 @@ async fn handle_snapshot(client: &aws_sdk_s3::Client, metadata: &TableMetadata, 
         None => Ok(serde_json::to_string_pretty(snapshot)?),
         Some(SnapshotCmd::Files) => {
             println!("metadata {}", metadata.location());
-            let stream = iterate_files(client, snapshot, metadata.format_version());
+            let stream = iterate_files(file_io, snapshot, metadata.format_version());
             tokio::pin!(stream);
 
             while let Some(result) = stream.next().await {
@@ -94,9 +94,9 @@ async fn handle_snapshot(client: &aws_sdk_s3::Client, metadata: &TableMetadata, 
     }
 }
 
-#[instrument(skip(client))]
+#[instrument(skip(file_io))]
 fn iterate_files<'a>(
-    client: &'a aws_sdk_s3::Client,
+    file_io: &'a FileIO,
     snapshot: &'a iceberg::spec::Snapshot,
     format_version: iceberg::spec::FormatVersion,
 ) -> impl Stream<Item = Result<(FileType, String)>> + 'a {
@@ -104,15 +104,15 @@ fn iterate_files<'a>(
         let manifest_list_location = snapshot.manifest_list();
         yield (FileType::ManifestList, manifest_list_location.to_string());
 
-        let manifest_list_bytes = fetch_bytes(client, manifest_list_location).await?;
+        let manifest_list_bytes = fetch_bytes(file_io, manifest_list_location).await?;
         let manifest_list = ManifestList::parse_with_version(&manifest_list_bytes, format_version)
             .context("Failed to parse manifest list")?;
 
         let tasks = manifest_list.entries().iter().map(|manifest_file| {
             let manifest_location = manifest_file.manifest_path.clone();
-            let client = client.clone();
+            let file_io = file_io.clone();
             async move {
-                let bytes_result = fetch_bytes(&client, &manifest_location).await;
+                let bytes_result = fetch_bytes(&file_io, &manifest_location).await;
                 (manifest_location, bytes_result)
             }
         });
@@ -136,30 +136,15 @@ fn iterate_files<'a>(
     }
 }
 
-async fn fetch_bytes(client: &aws_sdk_s3::Client, location: &str) -> Result<Vec<u8>> {
-    // We use the `url` crate to parse the S3 URI.
-    let url = Url::parse(location).context("Failed to parse URL")?;
-
-    if url.scheme() != "s3" {
-        anyhow::bail!("Only s3:// locations are currently supported");
-    }
-
-    let bucket = url.host_str().context("Missing bucket in S3 URL")?;
-    let key = url.path().trim_start_matches('/');
-
-    let response = client.get_object()
-        .bucket(bucket)
-        .key(key)
-        .send()
-        .await
-        .with_context(|| format!("Failed to fetch S3 object at s3://{}/{}", bucket, key))?;
-
-    Ok(response.body.collect().await?.into_bytes().to_vec())
+async fn fetch_bytes(file_io: &FileIO, location: &str) -> Result<Vec<u8>> {
+    let input_file = file_io.new_input(location)?;
+    let bytes = input_file.read().await?;
+    Ok(bytes.to_vec())
 }
 
-#[instrument(skip(client))]
-pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Result<TableMetadata> {
-    let bytes = fetch_bytes(client, location).await?;
+#[instrument(skip(file_io))]
+pub async fn fetch_metadata(file_io: &FileIO, location: &str) -> Result<TableMetadata> {
+    let bytes = fetch_bytes(file_io, location).await?;
 
     let metadata: TableMetadata = serde_json::from_slice(&bytes)
         .context("Failed to parse Iceberg table metadata")?;
@@ -170,22 +155,19 @@ pub async fn fetch_metadata(client: &aws_sdk_s3::Client, location: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aws_smithy_mocks::{mock, mock_client};
-    use aws_sdk_s3::primitives::ByteStream;
+    use iceberg::io::{FileIOBuilder, FileWrite};
 
-    fn create_mock_client(metadata_json: &str) -> aws_sdk_s3::Client {
-        let metadata_json = metadata_json.to_string();
-        let get_object_rule = mock!(aws_sdk_s3::Client::get_object)
-            .match_requests(|req| {
-                req.bucket() == Some("bucket") && req.key() == Some("table/metadata.json")
-            })
-            .then_output(move || {
-                aws_sdk_s3::operation::get_object::GetObjectOutput::builder()
-                    .body(ByteStream::from(metadata_json.as_bytes().to_vec()))
-                    .build()
-            });
-
-        mock_client!(aws_sdk_s3, [&get_object_rule])
+    async fn create_memory_file_io(files: Vec<(&str, &str)>) -> FileIO {
+        let file_io = FileIOBuilder::new("memory").build().unwrap();
+        
+        for (path, content) in files {
+            let output_file = file_io.new_output(path).unwrap();
+            let mut writer = output_file.writer().await.unwrap();
+            writer.write(bytes::Bytes::from(content.to_string())).await.unwrap();
+            writer.close().await.unwrap();
+        }
+        
+        file_io
     }
 
     fn minimal_metadata() -> String {
@@ -237,10 +219,12 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_metadata() -> Result<()> {
         let metadata_json = minimal_metadata();
-        let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
+        
+        // Note: memory backend ignores the scheme (s3://) and treats path as key
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
 
-        let metadata = fetch_metadata(&client, location).await?;
+        let metadata = fetch_metadata(&file_io, location).await?;
 
         assert_eq!(metadata.format_version(), iceberg::spec::FormatVersion::V2);
         assert_eq!(metadata.location(), "s3://bucket/table");
@@ -251,10 +235,10 @@ mod tests {
     #[tokio::test]
     async fn test_handle_schema_current() -> Result<()> {
         let metadata_json = minimal_metadata();
-        let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
 
-        let output = handle_at_command(&client, location, TableCommands::Schema { schema_id: "current".to_string() }).await?;
+        let output = handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "current".to_string() }).await?;
 
         // Verify output contains schema fields
         assert!(output.contains("\"name\": \"id\""));
@@ -266,10 +250,10 @@ mod tests {
     #[tokio::test]
     async fn test_handle_snapshot_current() -> Result<()> {
         let metadata_json = minimal_metadata();
-        let client = create_mock_client(&metadata_json);
         let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
 
-        let output = handle_at_command(&client, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }).await?;
+        let output = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }).await?;
 
         // Verify output contains snapshot details
         assert!(output.contains("\"snapshot-id\": 123"));
