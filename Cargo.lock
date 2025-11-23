@@ -776,6 +776,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "strum",
  "tokio",
  "tracing",
  "tracing-subscriber",

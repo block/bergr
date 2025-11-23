@@ -6,24 +6,15 @@ use crate::cli::{TableCommands, SnapshotCmd};
 use futures::{stream, Stream, StreamExt};
 use async_stream::try_stream;
 use serde::Serialize;
+use strum::AsRefStr;
 
-#[derive(Debug)]
+#[derive(Debug, AsRefStr)]
+#[strum(serialize_all = "kebab-case")]
 pub enum FileType {
     Metadata,
     ManifestList,
     Manifest,
     Data,
-}
-
-impl FileType {
-    fn as_str(&self) -> &str {
-        match self {
-            FileType::Metadata => "metadata",
-            FileType::ManifestList => "manifest-list",
-            FileType::Manifest => "manifest",
-            FileType::Data => "data",
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -113,7 +104,7 @@ async fn handle_snapshot(file_io: &FileIO, metadata: &TableMetadata, snapshot_id
             let stream = iterate_files(file_io, snapshot, metadata.format_version())
                 .map(|result| {
                     result.map(|(file_type, path)| FileRecord {
-                        r#type: file_type.as_str().to_string(),
+                        r#type: file_type.as_ref().to_string(),
                         path,
                     })
                 });
