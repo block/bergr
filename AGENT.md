@@ -51,3 +51,13 @@ In Rust:
 - The agent should use idiomatic Rust patterns.
 - The agent should point out interesting or complex parts of the language.
 - The agent should be patient and helpful with explanations.
+
+## Approach
+
+- Take small steps, keeping tests running.
+- Write tests before writing code.
+- Checkpoint using "git add", whenever _all_ the tests are passing.
+- Ask me (the user) for approval to commit changes.
+- If we encounter a problem, stop and fix it before moving on.
+- Before fixing a bug, write a test that reproduces the bug.
+- Look for opportunities to refactor and improve the code.
