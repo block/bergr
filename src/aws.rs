@@ -4,10 +4,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
+use iceberg::CatalogBuilder;
 use iceberg::io::{CustomAwsCredentialLoader, FileIO, FileIOBuilder};
-use iceberg::Catalog;
-use iceberg_catalog_glue::GlueCatalogBuilder;
+use iceberg_catalog_glue::{GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalog, GlueCatalogBuilder};
 use reqsign::{AwsCredential, AwsCredentialLoad};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -60,16 +61,16 @@ pub async fn s3_file_io() -> Result<FileIO> {
     return Ok(builder.build()?);
 }
 
-pub async fn glue_catalog() -> Result<Arc<dyn Catalog>> {
-    // TODO: Figure out correct GlueCatalogBuilder API
-    let _aws_config = get_aws_config().await;
-    let _file_io = s3_file_io().await?;
+pub async fn glue_catalog() -> Result<GlueCatalog> {
+    let mut props = HashMap::new();
+    props.insert(
+        // The warehouse location is required by the builder but not used
+        // for read-only operations like listing namespaces.
+        GLUE_CATALOG_PROP_WAREHOUSE.to_string(),
+        "s3://iceberg-warehouse".to_string(),
+    );
 
-    // let catalog = GlueCatalogBuilder::default()
-    //     .with_config(aws_config.clone())
-    //     .with_file_io(file_io)
-    //     .build()?;
+    let catalog = GlueCatalogBuilder::default().load("glue", props).await?;
 
-    // Ok(Arc::new(catalog))
-    unimplemented!("Need to figure out GlueCatalogBuilder API")
+    Ok(catalog)
 }

@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
         Commands::Glue { command } => {
             let catalog = glue_catalog().await?;
             let mut output = TerminalOutput::new();
-            handle_catalog_command(catalog.as_ref(), command, &mut output).await?;
+            handle_catalog_command(&catalog, command, &mut output).await?;
         }
     }
 

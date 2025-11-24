@@ -1,8 +1,8 @@
+use crate::cli::CatalogCommands;
+use crate::terminal_output::TerminalOutput;
 use anyhow::Result;
 use futures::stream;
 use iceberg::Catalog;
-use crate::cli::CatalogCommands;
-use crate::terminal_output::TerminalOutput;
 use serde::Serialize;
 use std::io::Write;
 
@@ -39,8 +39,8 @@ async fn list_namespaces<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iceberg::table::Table;
     use iceberg::NamespaceIdent;
+    use iceberg::table::Table;
     use std::collections::HashMap;
 
     // Mock catalog for testing
@@ -66,7 +66,10 @@ mod tests {
             unimplemented!()
         }
 
-        async fn get_namespace(&self, _namespace: &NamespaceIdent) -> iceberg::Result<iceberg::Namespace> {
+        async fn get_namespace(
+            &self,
+            _namespace: &NamespaceIdent,
+        ) -> iceberg::Result<iceberg::Namespace> {
             unimplemented!()
         }
 
@@ -86,7 +89,10 @@ mod tests {
             unimplemented!()
         }
 
-        async fn list_tables(&self, _namespace: &NamespaceIdent) -> iceberg::Result<Vec<iceberg::TableIdent>> {
+        async fn list_tables(
+            &self,
+            _namespace: &NamespaceIdent,
+        ) -> iceberg::Result<Vec<iceberg::TableIdent>> {
             unimplemented!()
         }
 
@@ -133,9 +139,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_namespaces_empty() -> Result<()> {
-        let catalog = MockCatalog {
-            namespaces: vec![],
-        };
+        let catalog = MockCatalog { namespaces: vec![] };
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
