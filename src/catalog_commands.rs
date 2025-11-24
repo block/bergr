@@ -2,7 +2,9 @@ use crate::cli::CatalogCommands;
 use crate::terminal_output::TerminalOutput;
 use anyhow::Result;
 use futures::stream;
-use iceberg::Catalog;
+use iceberg::{Catalog, NamespaceIdent};
+use serde::Serialize;
+use std::collections::HashMap;
 use std::io::Write;
 
 pub async fn handle_catalog_command<W: Write>(
@@ -12,6 +14,7 @@ pub async fn handle_catalog_command<W: Write>(
 ) -> Result<()> {
     match command {
         CatalogCommands::Namespaces => list_namespaces(catalog, output).await,
+        CatalogCommands::Namespace { name } => get_namespace(catalog, &name, output).await,
     }
 }
 
@@ -27,6 +30,31 @@ async fn list_namespaces<W: Write>(
     }));
 
     output.display_stream(namespace_stream).await
+}
+
+#[derive(Debug, Serialize)]
+struct NamespaceInfo {
+    name: String,
+    properties: HashMap<String, String>,
+}
+
+async fn get_namespace<W: Write>(
+    catalog: &dyn Catalog,
+    name: &str,
+    output: &mut TerminalOutput<W>,
+) -> Result<()> {
+    // Parse namespace name (e.g., "db.schema" -> ["db", "schema"])
+    let parts: Vec<String> = name.split('.').map(String::from).collect();
+    let namespace_ident = NamespaceIdent::from_vec(parts)?;
+
+    let namespace = catalog.get_namespace(&namespace_ident).await?;
+
+    let info = NamespaceInfo {
+        name: namespace.name().as_ref().join("."),
+        properties: namespace.properties().clone(),
+    };
+
+    output.display_object(&info)
 }
 
 #[cfg(test)]
@@ -98,6 +126,42 @@ mod tests {
         // Sort namespaces for order-independent comparison
         namespaces.sort();
         assert_eq!(namespaces, vec!["analytics", "default"]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_namespace() -> Result<()> {
+        let catalog = create_memory_catalog().await?;
+
+        // Create namespace with properties
+        let mut props = HashMap::new();
+        props.insert("owner".to_string(), "data-team".to_string());
+        props.insert("description".to_string(), "Production data".to_string());
+
+        catalog
+            .create_namespace(&NamespaceIdent::new("production".to_string()), props)
+            .await?;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+
+        handle_catalog_command(
+            &catalog,
+            CatalogCommands::Namespace {
+                name: "production".to_string(),
+            },
+            &mut output,
+        )
+        .await?;
+
+        let output_str = String::from_utf8(buffer)?;
+
+        // Should output namespace properties as JSON
+        let namespace: serde_json::Value = serde_json::from_str(&output_str)?;
+        assert_eq!(namespace["name"], "production");
+        assert_eq!(namespace["properties"]["owner"], "data-team");
+        assert_eq!(namespace["properties"]["description"], "Production data");
 
         Ok(())
     }

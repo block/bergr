@@ -61,4 +61,9 @@ pub enum SnapshotCmd {
 pub enum CatalogCommands {
     /// List namespaces in the catalog
     Namespaces,
+    /// Get namespace properties
+    Namespace {
+        /// The namespace name (e.g., "default" or "db.schema")
+        name: String,
+    },
 }
