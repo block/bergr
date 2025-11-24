@@ -174,13 +174,14 @@ mod tests {
         file_io
     }
 
-    fn minimal_metadata() -> String {
-        r#"{
+    /// Returns metadata for an empty Iceberg table (no snapshots)
+    fn empty_metadata() -> serde_json::Value {
+        serde_json::json!({
             "format-version": 2,
             "table-uuid": "9c2c0c2c-9c2c-9c2c-9c2c-9c2c0c2c0c2c",
             "location": "s3://bucket/table",
             "last-sequence-number": 1,
-            "last-updated-ms": 1600000000000,
+            "last-updated-ms": 1600000000000_i64,
             "last-column-id": 1,
             "current-schema-id": 0,
             "schemas": [
@@ -203,21 +204,36 @@ mod tests {
             "default-sort-order-id": 0,
             "sort-orders": [{"order-id": 0, "fields": []}],
             "properties": {},
-            "current-snapshot-id": 123,
             "refs": {},
-            "snapshots": [
-                {
-                    "snapshot-id": 123,
-                    "sequence-number": 1,
-                    "timestamp-ms": 1600000000000,
-                    "manifest-list": "s3://bucket/table/snap-123.avro",
-                    "summary": { "operation": "append" },
-                    "schema-id": 0
-                }
-            ],
+            "snapshots": [],
             "snapshot-log": [],
             "metadata-log": []
-        }"#.to_string()
+        })
+    }
+
+    /// Returns metadata with a single snapshot added
+    fn metadata_with_snapshot(snapshot_id: i64, manifest_list: &str) -> serde_json::Value {
+        let mut metadata = empty_metadata();
+
+        metadata["current-snapshot-id"] = serde_json::json!(snapshot_id);
+        metadata["snapshots"] = serde_json::json!([
+            {
+                "snapshot-id": snapshot_id,
+                "sequence-number": 1,
+                "timestamp-ms": 1600000000000_i64,
+                "manifest-list": manifest_list,
+                "summary": { "operation": "append" },
+                "schema-id": 0
+            }
+        ]);
+
+        metadata
+    }
+
+    /// Returns minimal metadata with one snapshot (for backwards compatibility)
+    fn minimal_metadata() -> String {
+        serde_json::to_string(&metadata_with_snapshot(123, "s3://bucket/table/snap-123.avro"))
+            .unwrap()
     }
 
     #[tokio::test]
@@ -449,43 +465,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_snapshot_no_current() -> Result<()> {
-        // Create metadata without current snapshot
-        let metadata_json = r#"{
-            "format-version": 2,
-            "table-uuid": "9c2c0c2c-9c2c-9c2c-9c2c-9c2c0c2c0c2c",
-            "location": "s3://bucket/table",
-            "last-sequence-number": 1,
-            "last-updated-ms": 1600000000000,
-            "last-column-id": 1,
-            "current-schema-id": 0,
-            "schemas": [
-                {
-                    "type": "struct",
-                    "schema-id": 0,
-                    "fields": [
-                        {
-                            "id": 1,
-                            "name": "id",
-                            "required": true,
-                            "type": "int"
-                        }
-                    ]
-                }
-            ],
-            "default-spec-id": 0,
-            "partition-specs": [{"spec-id": 0, "fields": []}],
-            "last-partition-id": 999,
-            "default-sort-order-id": 0,
-            "sort-orders": [{"order-id": 0, "fields": []}],
-            "properties": {},
-            "refs": {},
-            "snapshots": [],
-            "snapshot-log": [],
-            "metadata-log": []
-        }"#;
-
+        let metadata_json = serde_json::to_string(&empty_metadata()).unwrap();
         let location = "s3://bucket/table/metadata.json";
-        let file_io = create_memory_file_io(vec![(location, metadata_json)]).await;
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
