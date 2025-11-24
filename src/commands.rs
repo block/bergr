@@ -278,4 +278,222 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_handle_metadata() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        handle_at_command(&file_io, location, TableCommands::Metadata, &mut output).await?;
+
+        // Verify JSON output contains metadata fields
+        let output_str = String::from_utf8(buffer)?;
+        let metadata: serde_json::Value = serde_json::from_str(output_str.trim())?;
+
+        assert_eq!(metadata["format-version"], 2);
+        assert_eq!(metadata["location"], "s3://bucket/table");
+        assert_eq!(metadata["current-schema-id"], 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_schemas() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        handle_at_command(&file_io, location, TableCommands::Schemas, &mut output).await?;
+
+        // Verify JSONL output (one schema per line)
+        let output_str = String::from_utf8(buffer)?;
+        let lines: Vec<&str> = output_str.lines().collect();
+
+        assert_eq!(lines.len(), 1); // minimal_metadata has 1 schema
+
+        let schema: serde_json::Value = serde_json::from_str(lines[0])?;
+        assert_eq!(schema["schema-id"], 0);
+        assert_eq!(schema["type"], "struct");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_schema_by_id() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "0".to_string() }, &mut output).await?;
+
+        let output_str = String::from_utf8(buffer)?;
+        let schema: serde_json::Value = serde_json::from_str(output_str.trim())?;
+
+        assert_eq!(schema["schema-id"], 0);
+        assert_eq!(schema["fields"][0]["name"], "id");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_schema_invalid_id() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        let result = handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "invalid".to_string() }, &mut output).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Schema ID must be an integer"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_schema_not_found() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        let result = handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "999".to_string() }, &mut output).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Schema 999 not found"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_snapshots() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        handle_at_command(&file_io, location, TableCommands::Snapshots, &mut output).await?;
+
+        // Verify JSONL output
+        let output_str = String::from_utf8(buffer)?;
+        let lines: Vec<&str> = output_str.lines().collect();
+
+        assert_eq!(lines.len(), 1); // minimal_metadata has 1 snapshot
+
+        let snapshot: serde_json::Value = serde_json::from_str(lines[0])?;
+        assert_eq!(snapshot["snapshot-id"], 123);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_snapshot_by_id() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "123".to_string(), command: None }, &mut output).await?;
+
+        let output_str = String::from_utf8(buffer)?;
+        let snapshot: serde_json::Value = serde_json::from_str(output_str.trim())?;
+
+        assert_eq!(snapshot["snapshot-id"], 123);
+        assert_eq!(snapshot["manifest-list"], "s3://bucket/table/snap-123.avro");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_snapshot_invalid_id() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        let result = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "invalid".to_string(), command: None }, &mut output).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Snapshot ID must be an integer"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_snapshot_not_found() -> Result<()> {
+        let metadata_json = minimal_metadata();
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        let result = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "999".to_string(), command: None }, &mut output).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Snapshot 999 not found"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handle_snapshot_no_current() -> Result<()> {
+        // Create metadata without current snapshot
+        let metadata_json = r#"{
+            "format-version": 2,
+            "table-uuid": "9c2c0c2c-9c2c-9c2c-9c2c-9c2c0c2c0c2c",
+            "location": "s3://bucket/table",
+            "last-sequence-number": 1,
+            "last-updated-ms": 1600000000000,
+            "last-column-id": 1,
+            "current-schema-id": 0,
+            "schemas": [
+                {
+                    "type": "struct",
+                    "schema-id": 0,
+                    "fields": [
+                        {
+                            "id": 1,
+                            "name": "id",
+                            "required": true,
+                            "type": "int"
+                        }
+                    ]
+                }
+            ],
+            "default-spec-id": 0,
+            "partition-specs": [{"spec-id": 0, "fields": []}],
+            "last-partition-id": 999,
+            "default-sort-order-id": 0,
+            "sort-orders": [{"order-id": 0, "fields": []}],
+            "properties": {},
+            "refs": {},
+            "snapshots": [],
+            "snapshot-log": [],
+            "metadata-log": []
+        }"#;
+
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, metadata_json)]).await;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        let result = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }, &mut output).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Table has no current snapshot"));
+
+        Ok(())
+    }
 }
