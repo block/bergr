@@ -1,5 +1,6 @@
 use anyhow::Result;
-use bergr::aws::s3_file_io;
+use bergr::aws::{glue_catalog, s3_file_io};
+use bergr::catalog_commands::handle_catalog_command;
 use bergr::cli::{Cli, Commands};
 use bergr::table_commands::handle_table_command;
 use bergr::terminal_output::TerminalOutput;
@@ -36,6 +37,11 @@ async fn main() -> Result<()> {
             let file_io = build_file_io(&location).await?;
             let mut output = TerminalOutput::new();
             handle_table_command(&file_io, &location, command, &mut output).await?;
+        }
+        Commands::Glue { command } => {
+            let catalog = glue_catalog().await?;
+            let mut output = TerminalOutput::new();
+            handle_catalog_command(catalog.as_ref(), command, &mut output).await?;
         }
     }
 

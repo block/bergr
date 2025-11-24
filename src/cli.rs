@@ -22,6 +22,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: TableCommands,
     },
+    /// Interact with AWS Glue Data Catalog
+    Glue {
+        #[command(subcommand)]
+        command: CatalogCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -50,4 +55,10 @@ pub enum TableCommands {
 pub enum SnapshotCmd {
     /// List files in the snapshot
     Files,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CatalogCommands {
+    /// List namespaces in the catalog
+    Namespaces,
 }

@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use iceberg::io::{CustomAwsCredentialLoader, FileIO, FileIOBuilder};
+use iceberg::Catalog;
+use iceberg_catalog_glue::GlueCatalogBuilder;
 use reqsign::{AwsCredential, AwsCredentialLoad};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -56,4 +58,18 @@ pub async fn s3_file_io() -> Result<FileIO> {
     }
 
     return Ok(builder.build()?);
+}
+
+pub async fn glue_catalog() -> Result<Arc<dyn Catalog>> {
+    // TODO: Figure out correct GlueCatalogBuilder API
+    let _aws_config = get_aws_config().await;
+    let _file_io = s3_file_io().await?;
+
+    // let catalog = GlueCatalogBuilder::default()
+    //     .with_config(aws_config.clone())
+    //     .with_file_io(file_io)
+    //     .build()?;
+
+    // Ok(Arc::new(catalog))
+    unimplemented!("Need to figure out GlueCatalogBuilder API")
 }
