@@ -1,7 +1,7 @@
 use anyhow::Result;
 use futures::{Stream, StreamExt};
 use serde::Serialize;
-use std::io::{Write, Stdout};
+use std::io::{Stdout, Write};
 
 /// Terminal output handler for displaying JSON objects and streams
 pub struct TerminalOutput<W: Write> {
@@ -10,7 +10,9 @@ pub struct TerminalOutput<W: Write> {
 
 impl Default for TerminalOutput<Stdout> {
     fn default() -> Self {
-        Self { writer: std::io::stdout() }
+        Self {
+            writer: std::io::stdout(),
+        }
     }
 }
 
@@ -35,7 +37,10 @@ impl<W: Write> TerminalOutput<W> {
     }
 
     /// Display items from a stream as JSON Lines (JSONL) format
-    pub async fn display_stream<T: Serialize>(&mut self, stream: impl Stream<Item = Result<T>>) -> Result<()> {
+    pub async fn display_stream<T: Serialize>(
+        &mut self,
+        stream: impl Stream<Item = Result<T>>,
+    ) -> Result<()> {
         tokio::pin!(stream);
         while let Some(result) = stream.next().await {
             let item = result?;
@@ -86,9 +91,18 @@ mod tests {
         let mut output = TerminalOutput::with_writer(&mut buffer);
 
         let items = vec![
-            TestData { name: "first".to_string(), value: 1 },
-            TestData { name: "second".to_string(), value: 2 },
-            TestData { name: "third".to_string(), value: 3 },
+            TestData {
+                name: "first".to_string(),
+                value: 1,
+            },
+            TestData {
+                name: "second".to_string(),
+                value: 2,
+            },
+            TestData {
+                name: "third".to_string(),
+                value: 3,
+            },
         ];
 
         let test_stream = stream::iter(items.clone().into_iter().map(Ok));
@@ -131,9 +145,15 @@ mod tests {
         let mut output = TerminalOutput::with_writer(&mut buffer);
 
         let items: Vec<Result<TestData>> = vec![
-            Ok(TestData { name: "first".to_string(), value: 1 }),
+            Ok(TestData {
+                name: "first".to_string(),
+                value: 1,
+            }),
             Err(anyhow::anyhow!("test error")),
-            Ok(TestData { name: "third".to_string(), value: 3 }),
+            Ok(TestData {
+                name: "third".to_string(),
+                value: 3,
+            }),
         ];
 
         let test_stream = stream::iter(items);

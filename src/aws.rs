@@ -4,18 +4,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
-use reqsign::{AwsCredential, AwsCredentialLoad};
-use tokio::sync::OnceCell;
 use iceberg::io::{CustomAwsCredentialLoader, FileIO, FileIOBuilder};
+use reqsign::{AwsCredential, AwsCredentialLoad};
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 static AWS_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::const_new();
 
 pub async fn get_aws_config() -> &'static aws_config::SdkConfig {
     AWS_CONFIG
-        .get_or_init(|| async {
-            aws_config::load_defaults(BehaviorVersion::latest()).await
-        })
+        .get_or_init(|| async { aws_config::load_defaults(BehaviorVersion::latest()).await })
         .await
 }
 
@@ -44,7 +42,6 @@ impl AwsCredentialLoad for SdkConfigCredentialLoader {
         Ok(None)
     }
 }
-
 
 pub async fn s3_file_io() -> Result<FileIO> {
     let aws_config = get_aws_config().await;

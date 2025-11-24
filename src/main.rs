@@ -1,11 +1,11 @@
 use anyhow::Result;
-use clap::Parser;
 use bergr::aws::s3_file_io;
 use bergr::cli::{Cli, Commands};
 use bergr::table_commands::handle_table_command;
 use bergr::terminal_output::TerminalOutput;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use clap::Parser;
 use iceberg::io::FileIO;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn build_file_io(location: &str) -> Result<FileIO> {
     if location.starts_with("s3://") {
