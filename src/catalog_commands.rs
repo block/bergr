@@ -32,107 +32,27 @@ async fn list_namespaces<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iceberg::NamespaceIdent;
-    use iceberg::table::Table;
+    use iceberg::memory::MEMORY_CATALOG_WAREHOUSE;
+    use iceberg::{CatalogBuilder, MemoryCatalog, NamespaceIdent};
     use std::collections::HashMap;
 
-    // Mock catalog for testing
-    #[derive(Debug)]
-    struct MockCatalog {
-        namespaces: Vec<NamespaceIdent>,
-    }
+    async fn create_memory_catalog() -> Result<MemoryCatalog> {
+        let mut props = HashMap::new();
+        props.insert(
+            MEMORY_CATALOG_WAREHOUSE.to_string(),
+            "memory://".to_string(),
+        );
 
-    #[async_trait::async_trait]
-    impl Catalog for MockCatalog {
-        async fn list_namespaces(
-            &self,
-            _parent: Option<&NamespaceIdent>,
-        ) -> iceberg::Result<Vec<NamespaceIdent>> {
-            Ok(self.namespaces.clone())
-        }
+        let catalog = iceberg::memory::MemoryCatalogBuilder::default()
+            .load("test", props)
+            .await?;
 
-        async fn create_namespace(
-            &self,
-            _namespace: &NamespaceIdent,
-            _properties: HashMap<String, String>,
-        ) -> iceberg::Result<iceberg::Namespace> {
-            unimplemented!()
-        }
-
-        async fn get_namespace(
-            &self,
-            _namespace: &NamespaceIdent,
-        ) -> iceberg::Result<iceberg::Namespace> {
-            unimplemented!()
-        }
-
-        async fn namespace_exists(&self, _namespace: &NamespaceIdent) -> iceberg::Result<bool> {
-            unimplemented!()
-        }
-
-        async fn update_namespace(
-            &self,
-            _namespace: &NamespaceIdent,
-            _properties: HashMap<String, String>,
-        ) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-
-        async fn drop_namespace(&self, _namespace: &NamespaceIdent) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-
-        async fn list_tables(
-            &self,
-            _namespace: &NamespaceIdent,
-        ) -> iceberg::Result<Vec<iceberg::TableIdent>> {
-            unimplemented!()
-        }
-
-        async fn create_table(
-            &self,
-            _namespace: &NamespaceIdent,
-            _creation: iceberg::TableCreation,
-        ) -> iceberg::Result<Table> {
-            unimplemented!()
-        }
-
-        async fn load_table(&self, _table: &iceberg::TableIdent) -> iceberg::Result<Table> {
-            unimplemented!()
-        }
-
-        async fn register_table(
-            &self,
-            _table: &iceberg::TableIdent,
-            _metadata_file_location: String,
-        ) -> iceberg::Result<Table> {
-            unimplemented!()
-        }
-
-        async fn drop_table(&self, _table: &iceberg::TableIdent) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-
-        async fn table_exists(&self, _table: &iceberg::TableIdent) -> iceberg::Result<bool> {
-            unimplemented!()
-        }
-
-        async fn rename_table(
-            &self,
-            _src: &iceberg::TableIdent,
-            _dest: &iceberg::TableIdent,
-        ) -> iceberg::Result<()> {
-            unimplemented!()
-        }
-
-        async fn update_table(&self, _commit: iceberg::TableCommit) -> iceberg::Result<Table> {
-            unimplemented!()
-        }
+        Ok(catalog)
     }
 
     #[tokio::test]
     async fn test_list_namespaces_empty() -> Result<()> {
-        let catalog = MockCatalog { namespaces: vec![] };
+        let catalog = create_memory_catalog().await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
@@ -147,12 +67,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_namespaces_with_data() -> Result<()> {
-        let catalog = MockCatalog {
-            namespaces: vec![
-                NamespaceIdent::new("default".to_string()),
-                NamespaceIdent::new("analytics".to_string()),
-            ],
-        };
+        let catalog = create_memory_catalog().await?;
+
+        // Create namespaces
+        catalog
+            .create_namespace(&NamespaceIdent::new("default".to_string()), HashMap::new())
+            .await?;
+        catalog
+            .create_namespace(
+                &NamespaceIdent::new("analytics".to_string()),
+                HashMap::new(),
+            )
+            .await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
@@ -164,12 +90,14 @@ mod tests {
 
         assert_eq!(lines.len(), 2);
 
-        // Parse and verify each line (now just JSON strings)
-        let ns1: String = serde_json::from_str(lines[0])?;
-        assert_eq!(ns1, "default");
+        let mut namespaces: Vec<String> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let ns2: String = serde_json::from_str(lines[1])?;
-        assert_eq!(ns2, "analytics");
+        // Sort namespaces for order-independent comparison
+        namespaces.sort();
+        assert_eq!(namespaces, vec!["analytics", "default"]);
 
         Ok(())
     }
