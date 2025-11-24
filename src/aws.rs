@@ -2,8 +2,22 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use reqsign::{AwsCredential, AwsCredentialLoad};
+use tokio::sync::OnceCell;
+use iceberg::io::{CustomAwsCredentialLoader, FileIO, FileIOBuilder};
+use std::sync::Arc;
+
+static AWS_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::const_new();
+
+pub async fn get_aws_config() -> &'static aws_config::SdkConfig {
+    AWS_CONFIG
+        .get_or_init(|| async {
+            aws_config::load_defaults(BehaviorVersion::latest()).await
+        })
+        .await
+}
 
 /// Implement AwsCredentialLoad via aws_config::SdkConfig.
 pub struct SdkConfigCredentialLoader(pub aws_config::SdkConfig);
@@ -29,4 +43,20 @@ impl AwsCredentialLoad for SdkConfigCredentialLoader {
         }
         Ok(None)
     }
+}
+
+
+pub async fn s3_file_io() -> Result<FileIO> {
+    let aws_config = get_aws_config().await;
+    let mut builder = FileIOBuilder::new("s3");
+
+    let sdk_loader = SdkConfigCredentialLoader::from(aws_config.clone());
+    let credential_loader = CustomAwsCredentialLoader::new(Arc::new(sdk_loader));
+    builder = builder.with_extension(credential_loader);
+
+    if let Some(region) = aws_config.region() {
+        builder = builder.with_prop("s3.region", region.to_string());
+    }
+
+    return Ok(builder.build()?);
 }

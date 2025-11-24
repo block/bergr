@@ -1,30 +1,18 @@
 use anyhow::Result;
 use clap::Parser;
-use bergr::aws::SdkConfigCredentialLoader;
+use bergr::aws::s3_file_io;
 use bergr::cli::{Cli, Commands};
 use bergr::table_commands::handle_table_command;
 use bergr::terminal_output::TerminalOutput;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-use iceberg::io::{CustomAwsCredentialLoader, FileIO};
-use aws_config::BehaviorVersion;
-use std::sync::Arc;
+use iceberg::io::FileIO;
 
 async fn build_file_io(location: &str) -> Result<FileIO> {
-    let mut builder = FileIO::from_path(location)?;
-
     if location.starts_with("s3://") {
-        let aws_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-
-        if let Some(region) = aws_config.region() {
-            builder = builder.with_prop("s3.region", region.to_string());
-        }
-
-        let sdk_loader = SdkConfigCredentialLoader::from(aws_config);
-        let credential_loader = CustomAwsCredentialLoader::new(Arc::new(sdk_loader));
-        builder = builder.with_extension(credential_loader);
+        return s3_file_io().await;
     }
 
-    Ok(builder.build()?)
+    Ok(FileIO::from_path(location)?.build()?)
 }
 
 #[tokio::main]
