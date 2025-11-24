@@ -3,13 +3,7 @@ use crate::terminal_output::TerminalOutput;
 use anyhow::Result;
 use futures::stream;
 use iceberg::Catalog;
-use serde::Serialize;
 use std::io::Write;
-
-#[derive(Debug, Serialize, serde::Deserialize)]
-struct NamespaceInfo {
-    namespace: Vec<String>,
-}
 
 pub async fn handle_catalog_command<W: Write>(
     catalog: &dyn Catalog,
@@ -28,9 +22,8 @@ async fn list_namespaces<W: Write>(
     let namespaces = catalog.list_namespaces(None).await?;
 
     let namespace_stream = stream::iter(namespaces.into_iter().map(|ns| {
-        Ok(NamespaceInfo {
-            namespace: ns.as_ref().iter().map(|s| s.to_string()).collect(),
-        })
+        let namespace = ns.as_ref().join(".");
+        Ok(namespace)
     }));
 
     output.display_stream(namespace_stream).await
@@ -171,12 +164,12 @@ mod tests {
 
         assert_eq!(lines.len(), 2);
 
-        // Parse and verify each line
-        let ns1: NamespaceInfo = serde_json::from_str(lines[0])?;
-        assert_eq!(ns1.namespace, vec!["default"]);
+        // Parse and verify each line (now just JSON strings)
+        let ns1: String = serde_json::from_str(lines[0])?;
+        assert_eq!(ns1, "default");
 
-        let ns2: NamespaceInfo = serde_json::from_str(lines[1])?;
-        assert_eq!(ns2.namespace, vec!["analytics"]);
+        let ns2: String = serde_json::from_str(lines[1])?;
+        assert_eq!(ns2, "analytics");
 
         Ok(())
     }
