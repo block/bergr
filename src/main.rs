@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use bergr::aws::SdkConfigCredentialLoader;
 use bergr::cli::{Cli, Commands};
-use bergr::commands::handle_at_command;
+use bergr::table_commands::handle_table_command;
 use bergr::terminal_output::TerminalOutput;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use iceberg::io::{CustomAwsCredentialLoader, FileIO};
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
         Commands::At { location, command } => {
             let file_io = build_file_io(&location).await?;
             let mut output = TerminalOutput::new();
-            handle_at_command(&file_io, &location, command, &mut output).await?;
+            handle_table_command(&file_io, &location, command, &mut output).await?;
         }
     }
 

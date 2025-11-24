@@ -26,18 +26,15 @@ struct FileRecord {
 }
 
 #[instrument(skip(file_io, output))]
-pub async fn handle_at_command<W: Write>(file_io: &FileIO, location: &str, command: TableCommands, output: &mut TerminalOutput<W>) -> Result<()> {
+pub async fn handle_table_command<W: Write>(file_io: &FileIO, location: &str, command: TableCommands, output: &mut TerminalOutput<W>) -> Result<()> {
     let metadata = fetch_metadata(file_io, location).await?;
-    handle_table_command(file_io, &metadata, command, output).await
-}
 
-pub async fn handle_table_command<W: Write>(file_io: &FileIO, metadata: &TableMetadata, command: TableCommands, output: &mut TerminalOutput<W>) -> Result<()> {
     match command {
-        TableCommands::Metadata => handle_metadata(metadata, output),
-        TableCommands::Schemas => handle_schemas(metadata, output).await,
-        TableCommands::Schema { schema_id } => handle_schema(metadata, &schema_id, output),
-        TableCommands::Snapshots => handle_snapshots(metadata, output).await,
-        TableCommands::Snapshot { snapshot_id, command } => handle_snapshot(file_io, metadata, &snapshot_id, command, output).await,
+        TableCommands::Metadata => handle_metadata(&metadata, output),
+        TableCommands::Schemas => handle_schemas(&metadata, output).await,
+        TableCommands::Schema { schema_id } => handle_schema(&metadata, &schema_id, output),
+        TableCommands::Snapshots => handle_snapshots(&metadata, output).await,
+        TableCommands::Snapshot { snapshot_id, command } => handle_snapshot(file_io, &metadata, &snapshot_id, command, output).await,
     }
 }
 
@@ -260,7 +257,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "current".to_string() }, &mut output).await?;
+        handle_table_command(&file_io, location, TableCommands::Schema { schema_id: "current".to_string() }, &mut output).await?;
 
         // Verify JSON output
         let output_str = String::from_utf8(buffer)?;
@@ -282,7 +279,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }, &mut output).await?;
+        handle_table_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }, &mut output).await?;
 
         // Verify JSON output
         let output_str = String::from_utf8(buffer)?;
@@ -303,7 +300,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_at_command(&file_io, location, TableCommands::Metadata, &mut output).await?;
+        handle_table_command(&file_io, location, TableCommands::Metadata, &mut output).await?;
 
         // Verify JSON output contains metadata fields
         let output_str = String::from_utf8(buffer)?;
@@ -324,7 +321,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_at_command(&file_io, location, TableCommands::Schemas, &mut output).await?;
+        handle_table_command(&file_io, location, TableCommands::Schemas, &mut output).await?;
 
         // Verify JSONL output (one schema per line)
         let output_str = String::from_utf8(buffer)?;
@@ -347,7 +344,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "0".to_string() }, &mut output).await?;
+        handle_table_command(&file_io, location, TableCommands::Schema { schema_id: "0".to_string() }, &mut output).await?;
 
         let output_str = String::from_utf8(buffer)?;
         let schema: serde_json::Value = serde_json::from_str(output_str.trim())?;
@@ -366,7 +363,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        let result = handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "invalid".to_string() }, &mut output).await;
+        let result = handle_table_command(&file_io, location, TableCommands::Schema { schema_id: "invalid".to_string() }, &mut output).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Schema ID must be an integer"));
@@ -382,7 +379,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        let result = handle_at_command(&file_io, location, TableCommands::Schema { schema_id: "999".to_string() }, &mut output).await;
+        let result = handle_table_command(&file_io, location, TableCommands::Schema { schema_id: "999".to_string() }, &mut output).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Schema 999 not found"));
@@ -398,7 +395,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_at_command(&file_io, location, TableCommands::Snapshots, &mut output).await?;
+        handle_table_command(&file_io, location, TableCommands::Snapshots, &mut output).await?;
 
         // Verify JSONL output
         let output_str = String::from_utf8(buffer)?;
@@ -420,7 +417,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "123".to_string(), command: None }, &mut output).await?;
+        handle_table_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "123".to_string(), command: None }, &mut output).await?;
 
         let output_str = String::from_utf8(buffer)?;
         let snapshot: serde_json::Value = serde_json::from_str(output_str.trim())?;
@@ -439,7 +436,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        let result = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "invalid".to_string(), command: None }, &mut output).await;
+        let result = handle_table_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "invalid".to_string(), command: None }, &mut output).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Snapshot ID must be an integer"));
@@ -455,7 +452,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        let result = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "999".to_string(), command: None }, &mut output).await;
+        let result = handle_table_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "999".to_string(), command: None }, &mut output).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Snapshot 999 not found"));
@@ -471,7 +468,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        let result = handle_at_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }, &mut output).await;
+        let result = handle_table_command(&file_io, location, TableCommands::Snapshot { snapshot_id: "current".to_string(), command: None }, &mut output).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Table has no current snapshot"));
