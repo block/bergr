@@ -30,8 +30,7 @@ async fn list_namespaces<W: Write>(
     let namespaces = catalog.list_namespaces(None).await?;
 
     let namespace_stream = stream::iter(namespaces.into_iter().map(|ns| {
-        let namespace = ns.as_ref().join(".");
-        Ok(namespace)
+        Ok(ns.to_string())
     }));
 
     output.display_stream(namespace_stream).await
@@ -55,7 +54,7 @@ async fn get_namespace<W: Write>(
     let namespace = catalog.get_namespace(&namespace_ident).await?;
 
     let info = NamespaceInfo {
-        name: namespace.name().as_ref().join("."),
+        name: namespace.name().to_string(),
         properties: namespace.properties().clone(),
     };
 
@@ -74,13 +73,7 @@ async fn list_tables_in_namespace<W: Write>(
     let tables = catalog.list_tables(&namespace_ident).await?;
 
     let table_stream = stream::iter(tables.into_iter().map(|table_ident| {
-        // Format as "namespace.table"
-        let full_name = format!(
-            "{}.{}",
-            table_ident.namespace().as_ref().join("."),
-            table_ident.name()
-        );
-        Ok(full_name)
+        Ok(table_ident.to_string())
     }));
 
     output.display_stream(table_stream).await
