@@ -2,7 +2,7 @@ use anyhow::Result;
 use bergr::aws::{glue_catalog, s3_file_io};
 use bergr::catalog_commands::handle_catalog_command;
 use bergr::cli::{Cli, Commands};
-use bergr::table_commands::handle_table_command;
+use bergr::table_commands::{handle_table_command, load_table};
 use bergr::terminal_output::TerminalOutput;
 use clap::Parser;
 use iceberg::io::FileIO;
@@ -35,8 +35,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::At { location, command } => {
             let file_io = build_file_io(&location).await?;
+            let table = load_table(&file_io, &location).await?;
             let mut output = TerminalOutput::new();
-            handle_table_command(&file_io, &location, command, &mut output).await?;
+            handle_table_command(&table, command, &mut output).await?;
         }
         Commands::Glue { command } => {
             let catalog = glue_catalog().await?;

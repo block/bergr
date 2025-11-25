@@ -27,14 +27,9 @@ struct FileRecord {
     path: String,
 }
 
-#[instrument(skip(file_io, output))]
-pub async fn handle_table_command<W: Write>(
-    file_io: &FileIO,
-    location: &str,
-    command: TableCommands,
-    output: &mut TerminalOutput<W>,
-) -> Result<()> {
-    // Load metadata and construct a Table
+/// Load a Table from a metadata file location
+#[instrument(skip(file_io))]
+pub async fn load_table(file_io: &FileIO, location: &str) -> Result<Table> {
     let metadata_file = file_io.new_input(location)?;
     let metadata_bytes = metadata_file.read().await?;
     let metadata: TableMetadata = serde_json::from_slice(&metadata_bytes)
@@ -49,6 +44,15 @@ pub async fn handle_table_command<W: Write>(
         .readonly(true)
         .build()?;
 
+    Ok(table)
+}
+
+#[instrument(skip(table, output))]
+pub async fn handle_table_command<W: Write>(
+    table: &Table,
+    command: TableCommands,
+    output: &mut TerminalOutput<W>,
+) -> Result<()> {
     match command {
         TableCommands::Metadata => handle_metadata(table.metadata(), output),
         TableCommands::Schemas => handle_schemas(table.metadata(), output).await,
@@ -282,12 +286,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Schema {
                 schema_id: "current".to_string(),
             },
@@ -312,12 +316,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Snapshot {
                 snapshot_id: "current".to_string(),
                 command: None,
@@ -342,10 +346,11 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_table_command(&file_io, location, TableCommands::Metadata, &mut output).await?;
+        handle_table_command(&table, TableCommands::Metadata, &mut output).await?;
 
         // Verify JSON output contains metadata fields
         let output_str = String::from_utf8(buffer)?;
@@ -363,10 +368,11 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_table_command(&file_io, location, TableCommands::Schemas, &mut output).await?;
+        handle_table_command(&table, TableCommands::Schemas, &mut output).await?;
 
         // Verify JSONL output (one schema per line)
         let output_str = String::from_utf8(buffer)?;
@@ -386,12 +392,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Schema {
                 schema_id: "0".to_string(),
             },
@@ -413,12 +419,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         let result = handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Schema {
                 schema_id: "invalid".to_string(),
             },
@@ -442,12 +448,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         let result = handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Schema {
                 schema_id: "999".to_string(),
             },
@@ -471,10 +477,11 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_table_command(&file_io, location, TableCommands::Snapshots, &mut output).await?;
+        handle_table_command(&table, TableCommands::Snapshots, &mut output).await?;
 
         // Verify JSONL output
         let output_str = String::from_utf8(buffer)?;
@@ -493,12 +500,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Snapshot {
                 snapshot_id: "123".to_string(),
                 command: None,
@@ -521,12 +528,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         let result = handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Snapshot {
                 snapshot_id: "invalid".to_string(),
                 command: None,
@@ -551,12 +558,12 @@ mod tests {
         let metadata_json = minimal_metadata();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         let result = handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Snapshot {
                 snapshot_id: "999".to_string(),
                 command: None,
@@ -581,12 +588,12 @@ mod tests {
         let metadata_json = serde_json::to_string(&empty_metadata()).unwrap();
         let location = "s3://bucket/table/metadata.json";
         let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
+        let table = load_table(&file_io, location).await?;
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
         let result = handle_table_command(
-            &file_io,
-            location,
+            &table,
             TableCommands::Snapshot {
                 snapshot_id: "current".to_string(),
                 command: None,
