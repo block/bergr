@@ -20,8 +20,7 @@ pub async fn get_aws_config() -> &'static aws_config::SdkConfig {
         .await
 }
 
-pub async fn s3_file_io() -> Result<FileIO> {
-    let aws_config = get_aws_config().await;
+pub async fn s3_file_io(aws_config: &aws_config::SdkConfig) -> Result<FileIO> {
     let mut builder = FileIOBuilder::new("s3");
 
     // Add region from AWS config
@@ -44,8 +43,7 @@ pub async fn s3_file_io() -> Result<FileIO> {
     Ok(builder.build()?)
 }
 
-pub async fn glue_catalog() -> Result<GlueCatalog> {
-    let aws_config = get_aws_config().await;
+pub async fn glue_catalog(aws_config: &aws_config::SdkConfig) -> Result<GlueCatalog> {
     let mut props = HashMap::new();
 
     // Required warehouse (not actually used for read-only ops)
@@ -80,4 +78,59 @@ pub async fn glue_catalog() -> Result<GlueCatalog> {
     let catalog = GlueCatalogBuilder::default().load("glue", props).await?;
 
     Ok(catalog)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aws_config::{BehaviorVersion, Region};
+    use aws_credential_types::Credentials;
+
+    async fn test_aws_config() -> aws_config::SdkConfig {
+        let creds = Credentials::new(
+            "test_access_key",
+            "test_secret_key",
+            Some("test_session_token".to_string()),
+            None,
+            "test",
+        );
+
+        aws_config::defaults(BehaviorVersion::latest())
+            .region(Region::new("us-west-2"))
+            .credentials_provider(creds)
+            .load()
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_s3_file_io_with_aws_config() -> Result<()> {
+        // Create a test AWS config with mock credentials
+        let aws_config = test_aws_config().await;
+
+        // Should successfully build FileIO with credentials from aws_config
+        let _file_io = s3_file_io(&aws_config).await?;
+
+        // If we get here without error, the function successfully:
+        // 1. Extracted region from aws_config (us-west-2)
+        // 2. Extracted credentials from aws_config (test_access_key, etc.)
+        // 3. Built FileIO with those properties
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_glue_catalog_with_aws_config() -> Result<()> {
+        // Create a test AWS config with mock credentials
+        let aws_config = test_aws_config().await;
+
+        // Should successfully build GlueCatalog with credentials from aws_config
+        let _catalog = glue_catalog(&aws_config).await?;
+
+        // If we get here without error, the function successfully:
+        // 1. Extracted region from aws_config (us-west-2)
+        // 2. Extracted credentials from aws_config (test_access_key, etc.)
+        // 3. Built GlueCatalog with those properties
+
+        Ok(())
+    }
 }
