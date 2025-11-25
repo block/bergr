@@ -27,6 +27,18 @@ pub enum Commands {
         #[command(subcommand)]
         command: CatalogCommands,
     },
+    /// Interact with a REST catalog
+    Rest {
+        /// The REST catalog URI (e.g., http://localhost:8181)
+        uri: String,
+
+        /// Optional warehouse location (e.g., s3://my-bucket/warehouse)
+        #[arg(long)]
+        warehouse: Option<String>,
+
+        #[command(subcommand)]
+        command: CatalogCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]

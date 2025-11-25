@@ -2,6 +2,7 @@ use anyhow::Result;
 use bergr::aws::{get_aws_config, glue_catalog, s3_file_io};
 use bergr::catalog_commands::handle_catalog_command;
 use bergr::cli::{Cli, Commands};
+use bergr::rest::rest_catalog;
 use bergr::table_commands::{handle_table_command, load_table};
 use bergr::terminal_output::TerminalOutput;
 use clap::Parser;
@@ -43,6 +44,15 @@ async fn main() -> Result<()> {
         Commands::Glue { command } => {
             let aws_config = get_aws_config().await;
             let catalog = glue_catalog(aws_config).await?;
+            let mut output = TerminalOutput::new();
+            handle_catalog_command(&catalog, command, &mut output).await?;
+        }
+        Commands::Rest {
+            uri,
+            warehouse,
+            command,
+        } => {
+            let catalog = rest_catalog(&uri, warehouse.as_deref()).await?;
             let mut output = TerminalOutput::new();
             handle_catalog_command(&catalog, command, &mut output).await?;
         }

@@ -810,6 +810,7 @@ dependencies = [
  "http 1.3.1",
  "iceberg",
  "iceberg-catalog-glue",
+ "iceberg-catalog-rest",
  "reqsign",
  "reqwest",
  "serde",
@@ -2086,6 +2087,27 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "iceberg-catalog-rest"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7aa0cb3c2a3e41c1fae671b7c6bfc09360271634b1790cce70bb1b674e735ef"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "http 1.3.1",
+ "iceberg",
+ "itertools",
+ "reqwest",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "typed-builder",
+ "uuid",
 ]
 
 [[package]]
