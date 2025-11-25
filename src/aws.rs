@@ -107,13 +107,28 @@ mod tests {
         // Create a test AWS config with mock credentials
         let aws_config = test_aws_config().await;
 
-        // Should successfully build FileIO with credentials from aws_config
-        let _file_io = s3_file_io(&aws_config).await?;
+        // Build FileIO with credentials from aws_config
+        let file_io = s3_file_io(&aws_config).await?;
 
-        // If we get here without error, the function successfully:
-        // 1. Extracted region from aws_config (us-west-2)
-        // 2. Extracted credentials from aws_config (test_access_key, etc.)
-        // 3. Built FileIO with those properties
+        // Inspect the properties that were set
+        let (_scheme, props, _extensions) = file_io.into_builder().into_parts();
+
+        // Verify region was extracted and set
+        assert_eq!(props.get(S3_REGION), Some(&"us-west-2".to_string()));
+
+        // Verify credentials were extracted and set
+        assert_eq!(
+            props.get(S3_ACCESS_KEY_ID),
+            Some(&"test_access_key".to_string())
+        );
+        assert_eq!(
+            props.get(S3_SECRET_ACCESS_KEY),
+            Some(&"test_secret_key".to_string())
+        );
+        assert_eq!(
+            props.get(S3_SESSION_TOKEN),
+            Some(&"test_session_token".to_string())
+        );
 
         Ok(())
     }
@@ -123,13 +138,31 @@ mod tests {
         // Create a test AWS config with mock credentials
         let aws_config = test_aws_config().await;
 
-        // Should successfully build GlueCatalog with credentials from aws_config
-        let _catalog = glue_catalog(&aws_config).await?;
+        // Build GlueCatalog with credentials from aws_config
+        let catalog = glue_catalog(&aws_config).await?;
 
-        // If we get here without error, the function successfully:
-        // 1. Extracted region from aws_config (us-west-2)
-        // 2. Extracted credentials from aws_config (test_access_key, etc.)
-        // 3. Built GlueCatalog with those properties
+        // Get the FileIO that GlueCatalog created internally
+        let file_io = catalog.file_io();
+
+        // Inspect the properties that were passed through
+        let (_scheme, props, _extensions) = file_io.into_builder().into_parts();
+
+        // Verify region was extracted and set
+        assert_eq!(props.get(S3_REGION), Some(&"us-west-2".to_string()));
+
+        // Verify credentials were extracted and set
+        assert_eq!(
+            props.get(S3_ACCESS_KEY_ID),
+            Some(&"test_access_key".to_string())
+        );
+        assert_eq!(
+            props.get(S3_SECRET_ACCESS_KEY),
+            Some(&"test_secret_key".to_string())
+        );
+        assert_eq!(
+            props.get(S3_SESSION_TOKEN),
+            Some(&"test_session_token".to_string())
+        );
 
         Ok(())
     }
