@@ -1,8 +1,9 @@
 use crate::cli::CatalogCommands;
+use crate::table_commands::handle_table_command;
 use crate::terminal_output::TerminalOutput;
 use anyhow::Result;
 use futures::stream;
-use iceberg::{Catalog, NamespaceIdent};
+use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
@@ -20,6 +21,9 @@ pub async fn handle_catalog_command<W: Write>(
             None => get_namespace(catalog, &name, output).await,
             Some(NamespaceCmd::Tables) => list_tables_in_namespace(catalog, &name, output).await,
         },
+        CatalogCommands::Table { name, command } => {
+            load_and_handle_table(catalog, &name, command, output).await
+        }
     }
 }
 
@@ -77,6 +81,22 @@ async fn list_tables_in_namespace<W: Write>(
     }));
 
     output.display_stream(table_stream).await
+}
+
+async fn load_and_handle_table<W: Write>(
+    catalog: &dyn Catalog,
+    name: &str,
+    command: crate::cli::TableCommands,
+    output: &mut TerminalOutput<W>,
+) -> Result<()> {
+    // Parse table identifier (e.g., "namespace.table" or "db.schema.table")
+    let table_ident = TableIdent::from_strs(name.split('.'))?;
+
+    // Load table from catalog
+    let table = catalog.load_table(&table_ident).await?;
+
+    // Delegate to table command handler
+    handle_table_command(&table, command, output).await
 }
 
 #[cfg(test)]
@@ -255,6 +275,60 @@ mod tests {
         tables.sort();
 
         assert_eq!(tables, vec!["analytics.events", "analytics.users"]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_table_metadata() -> Result<()> {
+        let catalog = create_memory_catalog().await?;
+
+        // Create namespace
+        let namespace_ident = NamespaceIdent::new("analytics".to_string());
+        catalog
+            .create_namespace(&namespace_ident, HashMap::new())
+            .await?;
+
+        // Create a table
+        use iceberg::TableCreation;
+        use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+
+        let schema = Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+                NestedField::optional(2, "name", Type::Primitive(PrimitiveType::String)).into(),
+            ])
+            .build()?;
+
+        catalog
+            .create_table(
+                &namespace_ident,
+                TableCreation::builder()
+                    .name("events".to_string())
+                    .schema(schema)
+                    .build(),
+            )
+            .await?;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+
+        handle_catalog_command(
+            &catalog,
+            CatalogCommands::Table {
+                name: "analytics.events".to_string(),
+                command: crate::cli::TableCommands::Metadata,
+            },
+            &mut output,
+        )
+        .await?;
+
+        let output_str = String::from_utf8(buffer)?;
+        let metadata: serde_json::Value = serde_json::from_str(&output_str)?;
+
+        // Verify the metadata contains expected fields
+        assert_eq!(metadata["format-version"], 2);
+        assert_eq!(metadata["current-schema-id"], 0);
 
         Ok(())
     }

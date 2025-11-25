@@ -68,6 +68,13 @@ pub enum CatalogCommands {
         #[command(subcommand)]
         command: Option<NamespaceCmd>,
     },
+    /// Inspect a specific table
+    Table {
+        /// The table identifier (e.g., "namespace.table" or "db.schema.table")
+        name: String,
+        #[command(subcommand)]
+        command: TableCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
