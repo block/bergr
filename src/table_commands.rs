@@ -5,7 +5,7 @@ use async_stream::try_stream;
 use futures::{Stream, StreamExt, stream};
 use iceberg::io::FileIO;
 use iceberg::spec::{Manifest, ManifestList, TableMetadata};
-use iceberg::table::Table;
+use iceberg::table::{StaticTable, Table};
 use iceberg::TableIdent;
 use serde::Serialize;
 use std::io::Write;
@@ -30,21 +30,9 @@ struct FileRecord {
 /// Load a Table from a metadata file location
 #[instrument(skip(file_io))]
 pub async fn load_table(file_io: &FileIO, location: &str) -> Result<Table> {
-    let metadata_file = file_io.new_input(location)?;
-    let metadata_bytes = metadata_file.read().await?;
-    let metadata: TableMetadata = serde_json::from_slice(&metadata_bytes)
-        .context("Failed to parse Iceberg table metadata")?;
-
     let table_ident = TableIdent::from_strs(["bergr", "table"])?;
-    let table = Table::builder()
-        .file_io(file_io.clone())
-        .metadata_location(location)
-        .metadata(metadata)
-        .identifier(table_ident)
-        .readonly(true)
-        .build()?;
-
-    Ok(table)
+    let static_table = StaticTable::from_metadata_file(location, table_ident, file_io.clone()).await?;
+    Ok(static_table.into_table())
 }
 
 #[instrument(skip(table, output))]
