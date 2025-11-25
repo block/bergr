@@ -5,6 +5,8 @@ use async_stream::try_stream;
 use futures::{Stream, StreamExt, stream};
 use iceberg::io::FileIO;
 use iceberg::spec::{Manifest, ManifestList, TableMetadata};
+use iceberg::table::Table;
+use iceberg::TableIdent;
 use serde::Serialize;
 use std::io::Write;
 use strum::AsRefStr;
@@ -32,17 +34,30 @@ pub async fn handle_table_command<W: Write>(
     command: TableCommands,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    let metadata = fetch_metadata(file_io, location).await?;
+    // Load metadata and construct a Table
+    let metadata_file = file_io.new_input(location)?;
+    let metadata_bytes = metadata_file.read().await?;
+    let metadata: TableMetadata = serde_json::from_slice(&metadata_bytes)
+        .context("Failed to parse Iceberg table metadata")?;
+
+    let table_ident = TableIdent::from_strs(["bergr", "table"])?;
+    let table = Table::builder()
+        .file_io(file_io.clone())
+        .metadata_location(location)
+        .metadata(metadata)
+        .identifier(table_ident)
+        .readonly(true)
+        .build()?;
 
     match command {
-        TableCommands::Metadata => handle_metadata(&metadata, output),
-        TableCommands::Schemas => handle_schemas(&metadata, output).await,
-        TableCommands::Schema { schema_id } => handle_schema(&metadata, &schema_id, output),
-        TableCommands::Snapshots => handle_snapshots(&metadata, output).await,
+        TableCommands::Metadata => handle_metadata(table.metadata(), output),
+        TableCommands::Schemas => handle_schemas(table.metadata(), output).await,
+        TableCommands::Schema { schema_id } => handle_schema(table.metadata(), &schema_id, output),
+        TableCommands::Snapshots => handle_snapshots(table.metadata(), output).await,
         TableCommands::Snapshot {
             snapshot_id,
             command,
-        } => handle_snapshot(file_io, &metadata, &snapshot_id, command, output).await,
+        } => handle_snapshot(&table, &snapshot_id, command, output).await,
     }
 }
 
@@ -90,12 +105,13 @@ async fn handle_snapshots<W: Write>(
 }
 
 async fn handle_snapshot<W: Write>(
-    file_io: &FileIO,
-    metadata: &TableMetadata,
+    table: &Table,
     snapshot_id: &str,
     command: Option<SnapshotCmd>,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
+    let metadata = table.metadata();
+
     let id = if snapshot_id == "current" {
         metadata
             .current_snapshot_id()
@@ -115,7 +131,7 @@ async fn handle_snapshot<W: Write>(
         None => output.display_object(snapshot),
         Some(SnapshotCmd::Files) => {
             let stream =
-                iterate_files(file_io, snapshot, metadata.format_version()).map(|result| {
+                iterate_files(table.file_io(), snapshot, metadata.format_version()).map(|result| {
                     result.map(|(file_type, path)| FileRecord {
                         r#type: file_type.as_ref().to_string(),
                         path,
@@ -173,16 +189,6 @@ async fn fetch_bytes(file_io: &FileIO, location: &str) -> Result<Vec<u8>> {
     let input_file = file_io.new_input(location)?;
     let bytes = input_file.read().await?;
     Ok(bytes.to_vec())
-}
-
-#[instrument(skip(file_io))]
-pub async fn fetch_metadata(file_io: &FileIO, location: &str) -> Result<TableMetadata> {
-    let bytes = fetch_bytes(file_io, location).await?;
-
-    let metadata: TableMetadata =
-        serde_json::from_slice(&bytes).context("Failed to parse Iceberg table metadata")?;
-
-    Ok(metadata)
 }
 
 #[cfg(test)]
@@ -269,22 +275,6 @@ mod tests {
             "s3://bucket/table/snap-123.avro",
         ))
         .unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_fetch_metadata() -> Result<()> {
-        let metadata_json = minimal_metadata();
-        let location = "s3://bucket/table/metadata.json";
-
-        // Note: memory backend ignores the scheme (s3://) and treats path as key
-        let file_io = create_memory_file_io(vec![(location, &metadata_json)]).await;
-
-        let metadata = fetch_metadata(&file_io, location).await?;
-
-        assert_eq!(metadata.format_version(), iceberg::spec::FormatVersion::V2);
-        assert_eq!(metadata.location(), "s3://bucket/table");
-
-        Ok(())
     }
 
     #[tokio::test]
