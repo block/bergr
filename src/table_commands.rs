@@ -142,7 +142,31 @@ async fn handle_snapshot_files<W: Write>(
         verify,
     );
 
-    output.display_stream(stream).await
+    // Count missing files while displaying the stream
+    let mut missing_count = 0;
+    let mut stream = Box::pin(stream);
+
+    while let Some(result) = stream.next().await {
+        let record = result?;
+
+        // Check if this is a missing file
+        if record.exists == Some(false) {
+            missing_count += 1;
+        }
+
+        // Display the record
+        output.display_object(&record)?;
+    }
+
+    // If any files are missing, return an error
+    if verify && missing_count > 0 {
+        return Err(anyhow::anyhow!(
+            "ERROR: table is corrupt - {} file(s) missing",
+            missing_count
+        ));
+    }
+
+    Ok(())
 }
 
 #[instrument(skip(file_io))]
