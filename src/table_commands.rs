@@ -1,6 +1,6 @@
 use crate::cli::{SnapshotCmd, TableCommands};
+use crate::data_location_manifest::{DataLocationManifest, try_load_data_location_manifest};
 use crate::error::ExpectedError;
-use crate::s3_lister::{S3FileCache, try_load_s3_file_cache};
 use crate::terminal_output::TerminalOutput;
 use anyhow::{Context, Result};
 use async_stream::try_stream;
@@ -151,10 +151,10 @@ async fn handle_snapshot_files<W: Write>(
     verify: bool,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    // If verifying, try to pre-load an S3 file cache based on table location
-    let file_cache = if verify {
+    // If verifying, try to pre-load a data location manifest
+    let manifest = if verify {
         let prefix = data_file_prefix(table.metadata());
-        try_load_s3_file_cache(table.file_io().clone(), &prefix).await
+        try_load_data_location_manifest(table.file_io().clone(), &prefix).await?
     } else {
         None
     };
@@ -164,7 +164,7 @@ async fn handle_snapshot_files<W: Write>(
         snapshot,
         table.metadata().format_version(),
         verify,
-        file_cache.as_ref(),
+        manifest.as_ref(),
     );
 
     // Count missing files while displaying the stream
@@ -194,13 +194,13 @@ async fn handle_snapshot_files<W: Write>(
     Ok(())
 }
 
-#[instrument(skip(file_io, file_cache))]
+#[instrument(skip(file_io, location_manifest))]
 fn iterate_files<'a>(
     file_io: &'a FileIO,
     snapshot: &'a iceberg::spec::Snapshot,
     format_version: iceberg::spec::FormatVersion,
     verify: bool,
-    file_cache: Option<&'a S3FileCache>,
+    location_manifest: Option<&'a DataLocationManifest>,
 ) -> impl Stream<Item = Result<FileRecord>> + 'a {
     try_stream! {
         let implicitly_exists = if verify { Some(true) } else { None };
@@ -248,11 +248,11 @@ fn iterate_files<'a>(
                 .map(|entry| entry.data_file().file_path().to_string())
                 .collect();
 
-            // Check existence using cache if available, otherwise fall back to per-file checks
-            if let Some(cache) = file_cache {
-                // Fast path: use pre-loaded cache
+            // Check existence using manifest if available, otherwise fall back to per-file checks
+            if let Some(manifest) = location_manifest {
+                // Fast path: use pre-loaded manifest
                 for path in data_files {
-                    let exists = cache.exists(&path);
+                    let exists = manifest.contains(&path);
                     yield FileRecord {
                         r#type: FileType::Data,
                         path,
