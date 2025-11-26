@@ -1,6 +1,5 @@
 //! AWS integration utilities for credential loading
 
-use crate::error::ExpectedError;
 use anyhow::Result;
 use aws_config::BehaviorVersion;
 use aws_config::meta::credentials::CredentialsProviderChain;
@@ -30,7 +29,7 @@ fn build_credentials_provider() -> SharedCredentialsProvider {
     SharedCredentialsProvider::new(chain)
 }
 
-pub async fn get_aws_config() -> Result<aws_config::SdkConfig> {
+pub async fn get_aws_config() -> aws_config::SdkConfig {
     let config = aws_config::defaults(BehaviorVersion::latest())
         .credentials_provider(build_credentials_provider())
         .load()
@@ -41,10 +40,10 @@ pub async fn get_aws_config() -> Result<aws_config::SdkConfig> {
         creds_provider
             .provide_credentials()
             .await
-            .map_err(|e| anyhow::Error::new(ExpectedError::Config(format!("{:?}", e))))?;
+            .expect("AWS credentials not configured");
     }
 
-    Ok(config)
+    config
 }
 
 pub async fn s3_file_io(aws_config: &aws_config::SdkConfig) -> Result<FileIO> {

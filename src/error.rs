@@ -5,8 +5,6 @@ use std::fmt;
 pub enum ExpectedError {
     /// Invalid user input (non-existent table, invalid parameters, etc.)
     UserInput(String),
-    /// Configuration problems (missing credentials, invalid config, etc.)
-    Config(String),
     /// Operation failed validation (corrupt table, missing files, etc.)
     Failed(String),
 }
@@ -15,7 +13,6 @@ impl fmt::Display for ExpectedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExpectedError::UserInput(msg) => write!(f, "{}", msg),
-            ExpectedError::Config(msg) => write!(f, "{}", msg),
             ExpectedError::Failed(msg) => write!(f, "{}", msg),
         }
     }
