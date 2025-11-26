@@ -66,7 +66,11 @@ pub enum TableCommands {
 #[derive(Subcommand, Debug)]
 pub enum SnapshotCmd {
     /// List files in the snapshot
-    Files,
+    Files {
+        /// Verify that data files exist
+        #[arg(long)]
+        verify: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

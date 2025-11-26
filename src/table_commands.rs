@@ -25,6 +25,8 @@ pub enum FileType {
 struct FileRecord {
     r#type: String,
     path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exists: Option<bool>,
 }
 
 /// Load a Table from a metadata file location
@@ -122,22 +124,24 @@ async fn handle_snapshot<W: Write>(
 
     match command {
         None => output.display_object(snapshot),
-        Some(SnapshotCmd::Files) => handle_snapshot_files(table, snapshot, output).await,
+        Some(SnapshotCmd::Files { verify }) => {
+            handle_snapshot_files(table, snapshot, verify, output).await
+        }
     }
 }
 
 async fn handle_snapshot_files<W: Write>(
     table: &Table,
     snapshot: &iceberg::spec::Snapshot,
+    verify: bool,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    let stream =
-        iterate_files(table.file_io(), snapshot, table.metadata().format_version()).map(|result| {
-            result.map(|(file_type, path)| FileRecord {
-                r#type: file_type.as_ref().to_string(),
-                path,
-            })
-        });
+    let stream = iterate_files(
+        table.file_io(),
+        snapshot,
+        table.metadata().format_version(),
+        verify,
+    );
 
     output.display_stream(stream).await
 }
@@ -147,10 +151,15 @@ fn iterate_files<'a>(
     file_io: &'a FileIO,
     snapshot: &'a iceberg::spec::Snapshot,
     format_version: iceberg::spec::FormatVersion,
-) -> impl Stream<Item = Result<(FileType, String)>> + 'a {
+    verify: bool,
+) -> impl Stream<Item = Result<FileRecord>> + 'a {
     try_stream! {
         let manifest_list_location = snapshot.manifest_list();
-        yield (FileType::ManifestList, manifest_list_location.to_string());
+        yield FileRecord {
+            r#type: FileType::ManifestList.as_ref().to_string(),
+            path: manifest_list_location.to_string(),
+            exists: None,
+        };
 
         let manifest_list_bytes = fetch_bytes(file_io, manifest_list_location).await?;
         let manifest_list = ManifestList::parse_with_version(&manifest_list_bytes, format_version)
@@ -168,7 +177,11 @@ fn iterate_files<'a>(
         let mut stream = stream::iter(tasks).buffered(7);
 
         while let Some((manifest_location, bytes_result)) = stream.next().await {
-            yield (FileType::Manifest, manifest_location.clone());
+            yield FileRecord {
+                r#type: FileType::Manifest.as_ref().to_string(),
+                path: manifest_location.clone(),
+                exists: None,
+            };
 
             let manifest_bytes = bytes_result?;
             let manifest = Manifest::parse_avro(manifest_bytes.as_slice())
@@ -177,7 +190,18 @@ fn iterate_files<'a>(
             for entry in manifest.entries() {
                 // Only list added or existing files
                 if entry.status() == iceberg::spec::ManifestStatus::Added || entry.status() == iceberg::spec::ManifestStatus::Existing {
-                    yield (FileType::Data, entry.data_file().file_path().to_string());
+                    let path = entry.data_file().file_path().to_string();
+                    let exists = if verify {
+                        Some(file_io.exists(&path).await.unwrap_or(false))
+                    } else {
+                        None
+                    };
+
+                    yield FileRecord {
+                        r#type: FileType::Data.as_ref().to_string(),
+                        path,
+                        exists,
+                    };
                 }
             }
         }
