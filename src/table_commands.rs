@@ -1,6 +1,6 @@
 use crate::cli::{SnapshotCmd, TableCommands};
 use crate::error::ExpectedError;
-use crate::s3_lister::{S3FileCache, parse_s3_url, s3_client_from_file_io};
+use crate::s3_lister::{S3FileCache, try_load_s3_file_cache};
 use crate::terminal_output::TerminalOutput;
 use anyhow::{Context, Result};
 use async_stream::try_stream;
@@ -11,7 +11,7 @@ use iceberg::spec::{Manifest, ManifestList, TableMetadata};
 use iceberg::table::{StaticTable, Table};
 use serde::Serialize;
 use std::io::Write;
-use tracing::{debug, instrument};
+use tracing::instrument;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -131,143 +131,40 @@ async fn handle_snapshot<W: Write>(
     }
 }
 
+/// Iceberg table property for custom data file location.
+const WRITE_DATA_LOCATION: &str = "write.data.path";
+
+/// Derives the data file prefix for a table.
+///
+/// Uses the `write.data.path` property if set, otherwise `{location}/data/`.
+fn data_file_prefix(metadata: &TableMetadata) -> String {
+    metadata
+        .properties()
+        .get(WRITE_DATA_LOCATION)
+        .map(|path| format!("{}/", path.trim_end_matches('/')))
+        .unwrap_or_else(|| format!("{}/data/", metadata.location().trim_end_matches('/')))
+}
+
 async fn handle_snapshot_files<W: Write>(
     table: &Table,
     snapshot: &iceberg::spec::Snapshot,
     verify: bool,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    // Determine if we can use S3 optimization: verify mode and files are on S3
-    let use_s3_optimization = verify && parse_s3_url(snapshot.manifest_list()).is_some();
+    // If verifying, try to pre-load an S3 file cache based on table location
+    let file_cache = if verify {
+        let prefix = data_file_prefix(table.metadata());
+        try_load_s3_file_cache(table.file_io().clone(), &prefix).await
+    } else {
+        None
+    };
 
-    if use_s3_optimization {
-        // Try to build an S3 client from the table's FileIO credentials
-        debug!("Attempting to build S3 client from FileIO for optimized verification");
-        if let Some(s3_client) = s3_client_from_file_io(table.file_io().clone()) {
-            debug!("Using S3 prefix listing for optimized file verification");
-            return handle_snapshot_files_with_s3_cache(table, snapshot, output, &s3_client).await;
-        }
-        debug!("Could not build S3 client from FileIO, falling back to streaming verification");
-    }
-
-    handle_snapshot_files_streaming(table, snapshot, verify, output).await
-}
-
-/// Verify snapshot files using S3 prefix listing (optimized path).
-///
-/// This approach:
-/// 1. Reads all manifests to collect data file paths
-/// 2. Builds an S3FileCache by listing the common prefix
-/// 3. Checks existence against the cache (no HeadObject calls)
-async fn handle_snapshot_files_with_s3_cache<W: Write>(
-    table: &Table,
-    snapshot: &iceberg::spec::Snapshot,
-    output: &mut TerminalOutput<W>,
-    s3_client: &aws_sdk_s3::Client,
-) -> Result<()> {
-    let file_io = table.file_io();
-    let format_version = table.metadata().format_version();
-
-    // Phase 1: Output manifest list and collect manifests
-    let manifest_list_location = snapshot.manifest_list();
-    output.display_object(&FileRecord {
-        r#type: FileType::ManifestList,
-        path: manifest_list_location.to_string(),
-        exists: Some(true),
-    })?;
-
-    let manifest_list_bytes = fetch_bytes(file_io, manifest_list_location).await?;
-    let manifest_list = ManifestList::parse_with_version(&manifest_list_bytes, format_version)
-        .context("Failed to parse manifest list")?;
-
-    // Phase 2: Read all manifests and collect data file paths
-    let mut all_data_files: Vec<String> = Vec::new();
-    let mut manifest_records: Vec<FileRecord> = Vec::new();
-
-    let tasks = manifest_list.entries().iter().map(|manifest_file| {
-        let manifest_location = manifest_file.manifest_path.clone();
-        let file_io = file_io.clone();
-        async move {
-            let bytes_result = fetch_bytes(&file_io, &manifest_location).await;
-            (manifest_location, bytes_result)
-        }
-    });
-
-    let mut stream = stream::iter(tasks).buffered(7);
-
-    while let Some((manifest_location, bytes_result)) = stream.next().await {
-        manifest_records.push(FileRecord {
-            r#type: FileType::Manifest,
-            path: manifest_location.clone(),
-            exists: Some(true),
-        });
-
-        let manifest_bytes = bytes_result?;
-        let manifest =
-            Manifest::parse_avro(manifest_bytes.as_slice()).context("Failed to parse manifest")?;
-
-        let data_files: Vec<String> = manifest
-            .entries()
-            .iter()
-            .filter(|entry| {
-                entry.status() == iceberg::spec::ManifestStatus::Added
-                    || entry.status() == iceberg::spec::ManifestStatus::Existing
-            })
-            .map(|entry| entry.data_file().file_path().to_string())
-            .collect();
-
-        all_data_files.extend(data_files);
-    }
-
-    // Phase 3: Build S3 cache from collected paths
-    debug!(
-        "Building S3 file cache for {} data files",
-        all_data_files.len()
-    );
-    let s3_cache = S3FileCache::new(s3_client, &all_data_files).await?;
-    debug!("S3 cache contains {} files", s3_cache.len());
-
-    // Phase 4: Output manifest records
-    for record in manifest_records {
-        output.display_object(&record)?;
-    }
-
-    // Phase 5: Output data file records with existence from cache
-    let mut missing_count = 0;
-    for path in all_data_files {
-        let exists = s3_cache.exists(&path);
-        if !exists {
-            missing_count += 1;
-        }
-        output.display_object(&FileRecord {
-            r#type: FileType::Data,
-            path,
-            exists: Some(exists),
-        })?;
-    }
-
-    if missing_count > 0 {
-        return Err(anyhow::Error::new(ExpectedError::Failed(format!(
-            "table is corrupt - {} file(s) missing",
-            missing_count
-        ))));
-    }
-
-    Ok(())
-}
-
-/// Stream snapshot files with per-file existence checks (fallback path).
-async fn handle_snapshot_files_streaming<W: Write>(
-    table: &Table,
-    snapshot: &iceberg::spec::Snapshot,
-    verify: bool,
-    output: &mut TerminalOutput<W>,
-) -> Result<()> {
     let stream = iterate_files(
         table.file_io(),
         snapshot,
         table.metadata().format_version(),
         verify,
+        file_cache.as_ref(),
     );
 
     // Count missing files while displaying the stream
@@ -297,12 +194,13 @@ async fn handle_snapshot_files_streaming<W: Write>(
     Ok(())
 }
 
-#[instrument(skip(file_io))]
+#[instrument(skip(file_io, file_cache))]
 fn iterate_files<'a>(
     file_io: &'a FileIO,
     snapshot: &'a iceberg::spec::Snapshot,
     format_version: iceberg::spec::FormatVersion,
     verify: bool,
+    file_cache: Option<&'a S3FileCache>,
 ) -> impl Stream<Item = Result<FileRecord>> + 'a {
     try_stream! {
         let implicitly_exists = if verify { Some(true) } else { None };
@@ -339,7 +237,7 @@ fn iterate_files<'a>(
             let manifest = Manifest::parse_avro(manifest_bytes.as_slice())
                 .context("Failed to parse manifest")?;
 
-            // Collect data file paths and check existence in parallel
+            // Collect data file paths
             let data_files: Vec<String> = manifest
                 .entries()
                 .iter()
@@ -350,26 +248,40 @@ fn iterate_files<'a>(
                 .map(|entry| entry.data_file().file_path().to_string())
                 .collect();
 
-            let tasks = data_files.into_iter().map(|path| {
-                let file_io = file_io.clone();
-                async move {
-                    let exists = if verify {
-                        Some(file_io.exists(&path).await.unwrap_or(false))
-                    } else {
-                        None
+            // Check existence using cache if available, otherwise fall back to per-file checks
+            if let Some(cache) = file_cache {
+                // Fast path: use pre-loaded cache
+                for path in data_files {
+                    let exists = cache.exists(&path);
+                    yield FileRecord {
+                        r#type: FileType::Data,
+                        path,
+                        exists: Some(exists),
                     };
-                    (path, exists)
                 }
-            });
+            } else {
+                // Slow path: check each file individually
+                let tasks = data_files.into_iter().map(|path| {
+                    let file_io = file_io.clone();
+                    async move {
+                        let exists = if verify {
+                            Some(file_io.exists(&path).await.unwrap_or(false))
+                        } else {
+                            None
+                        };
+                        (path, exists)
+                    }
+                });
 
-            let mut data_stream = stream::iter(tasks).buffered(13);
+                let mut data_stream = stream::iter(tasks).buffered(13);
 
-            while let Some((path, exists)) = data_stream.next().await {
-                yield FileRecord {
-                    r#type: FileType::Data,
-                    path,
-                    exists,
-                };
+                while let Some((path, exists)) = data_stream.next().await {
+                    yield FileRecord {
+                        r#type: FileType::Data,
+                        path,
+                        exists,
+                    };
+                }
             }
         }
     }

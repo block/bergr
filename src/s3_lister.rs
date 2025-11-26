@@ -9,7 +9,8 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Builder as S3ConfigBuilder;
 use iceberg::io::FileIO;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use tracing::debug;
 
 /// Parses an S3 URL into bucket and key components.
@@ -23,43 +24,6 @@ pub fn parse_s3_url(url: &str) -> Option<(&str, &str)> {
     let bucket = &rest[..slash_pos];
     let key = &rest[slash_pos + 1..];
     Some((bucket, key))
-}
-
-/// Finds the longest common prefix among a set of S3 paths.
-///
-/// Returns None if paths are empty or have different buckets.
-pub fn find_common_prefix<'a>(
-    paths: impl IntoIterator<Item = &'a str>,
-) -> Option<(String, String)> {
-    let mut iter = paths.into_iter();
-    let first = iter.next()?;
-    let (bucket, first_key) = parse_s3_url(first)?;
-
-    let mut common_prefix = first_key.to_string();
-
-    for path in iter {
-        let (other_bucket, other_key) = parse_s3_url(path)?;
-        if other_bucket != bucket {
-            return None; // Different buckets, can't use common prefix
-        }
-
-        // Find common prefix between current common_prefix and other_key
-        let common_len = common_prefix
-            .chars()
-            .zip(other_key.chars())
-            .take_while(|(a, b)| a == b)
-            .count();
-        common_prefix.truncate(common_len);
-    }
-
-    // Truncate to last '/' to get a directory prefix
-    if let Some(last_slash) = common_prefix.rfind('/') {
-        common_prefix.truncate(last_slash + 1);
-    } else {
-        common_prefix.clear();
-    }
-
-    Some((bucket.to_string(), common_prefix))
 }
 
 /// Lists all objects in an S3 bucket with the given prefix.
@@ -105,14 +69,9 @@ pub struct S3FileCache {
 }
 
 impl S3FileCache {
-    /// Creates a new cache by listing objects with the common prefix of the given paths.
-    pub async fn new(client: &Client, paths: &[String]) -> Result<Self> {
-        let (bucket, prefix) = find_common_prefix(paths.iter().map(|s| s.as_str()))
-            .context("Could not determine common S3 prefix for file listing")?;
-
-        let existing_files = list_objects_with_prefix(client, &bucket, &prefix).await?;
-
-        Ok(Self { existing_files })
+    /// Creates a cache from a pre-loaded set of file paths.
+    pub fn new(existing_files: HashSet<String>) -> Self {
+        Self { existing_files }
     }
 
     /// Checks if a file exists in the cache.
@@ -127,15 +86,39 @@ impl S3FileCache {
         };
         self.existing_files.contains(&normalized)
     }
+}
 
-    /// Returns the number of files in the cache.
-    pub fn len(&self) -> usize {
-        self.existing_files.len()
-    }
+/// Attempts to load a cache of existing S3 files under the given prefix.
+///
+/// Returns `None` if:
+/// - The prefix is not an S3 URL
+/// - An S3 client cannot be built from the FileIO credentials
+/// - The S3 listing fails
+///
+/// This is designed to be called early, potentially in parallel with other operations,
+/// to pre-populate the cache before verifying individual files.
+pub async fn try_load_s3_file_cache(file_io: FileIO, data_prefix: &str) -> Option<S3FileCache> {
+    debug!(data_prefix = %data_prefix, "Attempting to pre-load S3 file cache");
 
-    /// Returns true if the cache is empty.
-    pub fn is_empty(&self) -> bool {
-        self.existing_files.is_empty()
+    // Parse the S3 URL to get bucket and prefix
+    let (bucket, prefix) = parse_s3_url(data_prefix)?;
+
+    // Try to build an S3 client from the FileIO
+    let client = s3_client_from_file_io(file_io)?;
+
+    // List objects - if this fails, return None rather than propagating the error
+    match list_objects_with_prefix(&client, bucket, prefix).await {
+        Ok(existing_files) => {
+            debug!(
+                file_count = existing_files.len(),
+                "Pre-loaded S3 file cache"
+            );
+            Some(S3FileCache::new(existing_files))
+        }
+        Err(e) => {
+            debug!(error = %e, "Failed to pre-load S3 file cache, will fall back to per-file checks");
+            None
+        }
     }
 }
 
@@ -158,81 +141,12 @@ mod tests {
     }
 
     #[test]
-    fn test_find_common_prefix_single_path() {
-        let paths = vec!["s3://bucket/data/table/part-00000.parquet"];
-        let result = find_common_prefix(paths.iter().copied());
-        assert_eq!(
-            result,
-            Some(("bucket".to_string(), "data/table/".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_find_common_prefix_multiple_paths() {
-        let paths = vec![
-            "s3://bucket/data/table/part-00000.parquet",
-            "s3://bucket/data/table/part-00001.parquet",
-            "s3://bucket/data/table/part-00002.parquet",
-        ];
-        let result = find_common_prefix(paths.iter().copied());
-        assert_eq!(
-            result,
-            Some(("bucket".to_string(), "data/table/".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_find_common_prefix_different_subdirs() {
-        let paths = vec![
-            "s3://bucket/data/table/2024/01/part-00000.parquet",
-            "s3://bucket/data/table/2024/02/part-00001.parquet",
-        ];
-        let result = find_common_prefix(paths.iter().copied());
-        assert_eq!(
-            result,
-            Some(("bucket".to_string(), "data/table/2024/".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_find_common_prefix_different_buckets() {
-        let paths = vec![
-            "s3://bucket1/data/file.parquet",
-            "s3://bucket2/data/file.parquet",
-        ];
-        let result = find_common_prefix(paths.iter().copied());
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_find_common_prefix_empty() {
-        let paths: Vec<&str> = vec![];
-        let result = find_common_prefix(paths.iter().copied());
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_find_common_prefix_with_s3a() {
-        let paths = vec![
-            "s3a://bucket/data/table/part-00000.parquet",
-            "s3a://bucket/data/table/part-00001.parquet",
-        ];
-        let result = find_common_prefix(paths.iter().copied());
-        assert_eq!(
-            result,
-            Some(("bucket".to_string(), "data/table/".to_string()))
-        );
-    }
-
-    #[test]
     fn test_s3_file_cache_exists() {
         let mut existing = HashSet::new();
         existing.insert("s3://bucket/data/file1.parquet".to_string());
         existing.insert("s3://bucket/data/file2.parquet".to_string());
 
-        let cache = S3FileCache {
-            existing_files: existing,
-        };
+        let cache = S3FileCache::new(existing);
 
         assert!(cache.exists("s3://bucket/data/file1.parquet"));
         assert!(cache.exists("s3a://bucket/data/file1.parquet")); // s3a normalized to s3
