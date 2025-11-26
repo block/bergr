@@ -162,7 +162,7 @@ async fn handle_snapshot_files<W: Write>(
     // If any files are missing, return an obvious error wrapped in anyhow::Error
     if verify && missing_count > 0 {
         let obvious_error = ObviousError(format!(
-            "ERROR: table is corrupt - {} file(s) missing",
+            "table is corrupt - {} file(s) missing",
             missing_count
         ));
         return Err(anyhow::Error::new(obvious_error));

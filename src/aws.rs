@@ -1,5 +1,6 @@
 //! AWS integration utilities for credential loading
 
+use crate::error::ObviousError;
 use anyhow::Result;
 use aws_config::BehaviorVersion;
 use aws_config::meta::credentials::CredentialsProviderChain;
@@ -13,9 +14,6 @@ use iceberg_catalog_glue::{
     GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalog, GlueCatalogBuilder,
 };
 use std::collections::HashMap;
-use tokio::sync::OnceCell;
-
-static AWS_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::const_new();
 
 /// Build a custom credentials provider chain that only uses Environment and Profile providers.
 /// This explicitly excludes IMDS, ECS, and Web Identity Token providers.
@@ -32,15 +30,21 @@ fn build_credentials_provider() -> SharedCredentialsProvider {
     SharedCredentialsProvider::new(chain)
 }
 
-pub async fn get_aws_config() -> &'static aws_config::SdkConfig {
-    AWS_CONFIG
-        .get_or_init(|| async {
-            aws_config::defaults(BehaviorVersion::latest())
-                .credentials_provider(build_credentials_provider())
-                .load()
-                .await
-        })
-        .await
+pub async fn get_aws_config() -> Result<aws_config::SdkConfig> {
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .credentials_provider(build_credentials_provider())
+        .load()
+        .await;
+
+    // Try to resolve credentials to detect configuration errors early
+    if let Some(creds_provider) = config.credentials_provider() {
+        creds_provider
+            .provide_credentials()
+            .await
+            .map_err(|e| anyhow::Error::new(ObviousError(format!("{:?}", e))))?;
+    }
+
+    Ok(config)
 }
 
 pub async fn s3_file_io(aws_config: &aws_config::SdkConfig) -> Result<FileIO> {

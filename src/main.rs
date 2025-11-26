@@ -12,8 +12,8 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 async fn build_file_io(location: &str) -> Result<FileIO> {
     if location.starts_with("s3://") {
-        let aws_config = get_aws_config().await;
-        return s3_file_io(aws_config).await;
+        let aws_config = get_aws_config().await?;
+        return s3_file_io(&aws_config).await;
     }
 
     Ok(FileIO::from_path(location)?.build()?)
@@ -24,7 +24,7 @@ async fn main() {
     if let Err(err) = run().await {
         // Check if this is a wrapped ObviousError (expected user-facing error)
         if let Some(obvious_error) = err.downcast_ref::<ObviousError>() {
-            eprintln!("{}", obvious_error.0);
+            eprintln!("ERROR: {}", obvious_error.0);
             std::process::exit(1);
         } else {
             // Unexpected errors: print full backtrace
@@ -57,8 +57,8 @@ async fn run() -> Result<()> {
             handle_table_command(&table, command, &mut output).await?;
         }
         Commands::Glue { command } => {
-            let aws_config = get_aws_config().await;
-            let catalog = glue_catalog(aws_config).await?;
+            let aws_config = get_aws_config().await?;
+            let catalog = glue_catalog(&aws_config).await?;
             let mut output = TerminalOutput::new();
             handle_catalog_command(&catalog, command, &mut output).await?;
         }
