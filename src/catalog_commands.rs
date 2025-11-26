@@ -1,7 +1,7 @@
 use crate::cli::CatalogCommands;
 use crate::table_commands::handle_table_command;
 use crate::terminal_output::TerminalOutput;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::stream;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use serde::Serialize;
@@ -93,7 +93,10 @@ async fn load_and_handle_table<W: Write>(
     let table_ident = TableIdent::from_strs(name.split('.'))?;
 
     // Load table from catalog
-    let table = catalog.load_table(&table_ident).await?;
+    let table = catalog
+        .load_table(&table_ident)
+        .await
+        .with_context(|| format!("could not load table '{}'", name))?;
 
     // Delegate to table command handler
     handle_table_command(&table, command, output).await

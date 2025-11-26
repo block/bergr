@@ -21,20 +21,6 @@ async fn build_file_io(location: &str) -> Result<FileIO> {
 
 #[tokio::main]
 async fn main() {
-    if let Err(err) = run().await {
-        // Check if this is a wrapped ExpectedError (expected user-facing error)
-        if let Some(expected_error) = err.downcast_ref::<ExpectedError>() {
-            eprintln!("ERROR: {}", expected_error);
-            std::process::exit(1);
-        } else {
-            // Unexpected errors: print full backtrace
-            eprintln!("{:?}", err);
-            std::process::exit(2);
-        }
-    }
-}
-
-async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.debug {
@@ -49,7 +35,26 @@ async fn run() -> Result<()> {
             .init();
     }
 
-    match cli.command {
+    if let Err(err) = run(cli.command).await {
+        // Check if this is a wrapped ExpectedError (expected user-facing error)
+        if let Some(expected_error) = err.downcast_ref::<ExpectedError>() {
+            eprintln!("ERROR: {expected_error}");
+            std::process::exit(1);
+        } else if cli.debug {
+            // Debug mode: show full error chain
+            eprintln!("ERROR: {err:?}");
+            std::process::exit(2);
+        } else {
+            // Normal mode: show top-level message with hint
+            eprintln!("ERROR: {err}");
+            eprintln!("       (use --debug for more details)");
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn run(command: Commands) -> Result<()> {
+    match command {
         Commands::At { location, command } => {
             let file_io = build_file_io(&location).await?;
             let table = load_table(&file_io, &location).await?;
