@@ -2,7 +2,8 @@
 
 use anyhow::Result;
 use aws_config::BehaviorVersion;
-use aws_credential_types::provider::ProvideCredentials;
+use aws_config::meta::credentials::CredentialsProviderChain;
+use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use iceberg::CatalogBuilder;
 use iceberg::io::{
     FileIO, FileIOBuilder, S3_ACCESS_KEY_ID, S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN,
@@ -16,9 +17,29 @@ use tokio::sync::OnceCell;
 
 static AWS_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::const_new();
 
+/// Build a custom credentials provider chain that only uses Environment and Profile providers.
+/// This explicitly excludes IMDS, ECS, and Web Identity Token providers.
+fn build_credentials_provider() -> SharedCredentialsProvider {
+    let chain = CredentialsProviderChain::first_try(
+        "Environment",
+        aws_config::environment::credentials::EnvironmentVariableCredentialsProvider::new(),
+    )
+    .or_else(
+        "Profile",
+        aws_config::profile::credentials::ProfileFileCredentialsProvider::builder().build(),
+    );
+
+    SharedCredentialsProvider::new(chain)
+}
+
 pub async fn get_aws_config() -> &'static aws_config::SdkConfig {
     AWS_CONFIG
-        .get_or_init(|| async { aws_config::load_defaults(BehaviorVersion::latest()).await })
+        .get_or_init(|| async {
+            aws_config::defaults(BehaviorVersion::latest())
+                .credentials_provider(build_credentials_provider())
+                .load()
+                .await
+        })
         .await
 }
 
