@@ -187,22 +187,37 @@ fn iterate_files<'a>(
             let manifest = Manifest::parse_avro(manifest_bytes.as_slice())
                 .context("Failed to parse manifest")?;
 
-            for entry in manifest.entries() {
-                // Only list added or existing files
-                if entry.status() == iceberg::spec::ManifestStatus::Added || entry.status() == iceberg::spec::ManifestStatus::Existing {
-                    let path = entry.data_file().file_path().to_string();
+            // Collect data file paths and check existence in parallel
+            let data_files: Vec<String> = manifest
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    entry.status() == iceberg::spec::ManifestStatus::Added
+                        || entry.status() == iceberg::spec::ManifestStatus::Existing
+                })
+                .map(|entry| entry.data_file().file_path().to_string())
+                .collect();
+
+            let tasks = data_files.into_iter().map(|path| {
+                let file_io = file_io.clone();
+                async move {
                     let exists = if verify {
                         Some(file_io.exists(&path).await.unwrap_or(false))
                     } else {
                         None
                     };
-
-                    yield FileRecord {
-                        r#type: FileType::Data,
-                        path,
-                        exists,
-                    };
+                    (path, exists)
                 }
+            });
+
+            let mut data_stream = stream::iter(tasks).buffered(13);
+
+            while let Some((path, exists)) = data_stream.next().await {
+                yield FileRecord {
+                    r#type: FileType::Data,
+                    path,
+                    exists,
+                };
             }
         }
     }
