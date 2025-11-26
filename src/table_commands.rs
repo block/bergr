@@ -9,11 +9,10 @@ use iceberg::spec::{Manifest, ManifestList, TableMetadata};
 use iceberg::table::{StaticTable, Table};
 use serde::Serialize;
 use std::io::Write;
-use strum::AsRefStr;
 use tracing::instrument;
 
-#[derive(Debug, AsRefStr)]
-#[strum(serialize_all = "kebab-case")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum FileType {
     Metadata,
     ManifestList,
@@ -23,7 +22,7 @@ pub enum FileType {
 
 #[derive(Debug, Serialize)]
 struct FileRecord {
-    r#type: String,
+    r#type: FileType,
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     exists: Option<bool>,
@@ -154,11 +153,12 @@ fn iterate_files<'a>(
     verify: bool,
 ) -> impl Stream<Item = Result<FileRecord>> + 'a {
     try_stream! {
+        let implicitly_exists = if verify { Some(true) } else { None };
         let manifest_list_location = snapshot.manifest_list();
         yield FileRecord {
-            r#type: FileType::ManifestList.as_ref().to_string(),
+            r#type: FileType::ManifestList,
             path: manifest_list_location.to_string(),
-            exists: None,
+            exists: implicitly_exists,
         };
 
         let manifest_list_bytes = fetch_bytes(file_io, manifest_list_location).await?;
@@ -178,9 +178,9 @@ fn iterate_files<'a>(
 
         while let Some((manifest_location, bytes_result)) = stream.next().await {
             yield FileRecord {
-                r#type: FileType::Manifest.as_ref().to_string(),
+                r#type: FileType::Manifest,
                 path: manifest_location.clone(),
-                exists: None,
+                exists: implicitly_exists,
             };
 
             let manifest_bytes = bytes_result?;
@@ -198,7 +198,7 @@ fn iterate_files<'a>(
                     };
 
                     yield FileRecord {
-                        r#type: FileType::Data.as_ref().to_string(),
+                        r#type: FileType::Data,
                         path,
                         exists,
                     };
