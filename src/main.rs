@@ -2,6 +2,7 @@ use anyhow::Result;
 use bergr::aws::{get_aws_config, glue_catalog, s3_file_io};
 use bergr::catalog_commands::handle_catalog_command;
 use bergr::cli::{Cli, Commands};
+use bergr::error::ObviousError;
 use bergr::rest::rest_catalog;
 use bergr::table_commands::{handle_table_command, load_table};
 use bergr::terminal_output::TerminalOutput;
@@ -19,7 +20,21 @@ async fn build_file_io(location: &str) -> Result<FileIO> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        // Check if this is a wrapped ObviousError (expected user-facing error)
+        if let Some(obvious_error) = err.downcast_ref::<ObviousError>() {
+            eprintln!("{}", obvious_error.0);
+            std::process::exit(1);
+        } else {
+            // Unexpected errors: print full backtrace
+            eprintln!("{:?}", err);
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.debug {
