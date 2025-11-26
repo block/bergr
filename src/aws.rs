@@ -1,6 +1,6 @@
 //! AWS integration utilities for credential loading
 
-use crate::error::ObviousError;
+use crate::error::ExpectedError;
 use anyhow::Result;
 use aws_config::BehaviorVersion;
 use aws_config::meta::credentials::CredentialsProviderChain;
@@ -41,7 +41,7 @@ pub async fn get_aws_config() -> Result<aws_config::SdkConfig> {
         creds_provider
             .provide_credentials()
             .await
-            .map_err(|e| anyhow::Error::new(ObviousError(format!("{:?}", e))))?;
+            .map_err(|e| anyhow::Error::new(ExpectedError::Config(format!("{:?}", e))))?;
     }
 
     Ok(config)
