@@ -11,7 +11,7 @@ use iceberg::io::FileIO;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn build_file_io(location: &str) -> Result<FileIO> {
-    if location.starts_with("s3://") {
+    if location.starts_with("s3://") || location.starts_with("s3a://") {
         let aws_config = get_aws_config().await;
         return s3_file_io(&aws_config).await;
     }
@@ -30,7 +30,11 @@ async fn main() {
                 EnvFilter::builder()
                     .with_default_directive(tracing::Level::INFO.into())
                     .from_env_lossy()
-                    .add_directive("bergr=debug".parse().unwrap()),
+                    .add_directive("bergr=debug".parse().unwrap())
+                    // AWS SDK tracing for Glue, S3, and HTTP operations
+                    .add_directive("aws_sdk_glue=debug".parse().unwrap())
+                    .add_directive("aws_sdk_s3=debug".parse().unwrap())
+                    .add_directive("aws_smithy_runtime=debug".parse().unwrap()),
             )
             .init();
     }

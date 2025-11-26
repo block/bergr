@@ -1,5 +1,6 @@
 use crate::cli::{SnapshotCmd, TableCommands};
 use crate::error::ExpectedError;
+use crate::s3_lister::{S3FileCache, parse_s3_url, s3_client_from_file_io};
 use crate::terminal_output::TerminalOutput;
 use anyhow::{Context, Result};
 use async_stream::try_stream;
@@ -10,7 +11,7 @@ use iceberg::spec::{Manifest, ManifestList, TableMetadata};
 use iceberg::table::{StaticTable, Table};
 use serde::Serialize;
 use std::io::Write;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -131,6 +132,132 @@ async fn handle_snapshot<W: Write>(
 }
 
 async fn handle_snapshot_files<W: Write>(
+    table: &Table,
+    snapshot: &iceberg::spec::Snapshot,
+    verify: bool,
+    output: &mut TerminalOutput<W>,
+) -> Result<()> {
+    // Determine if we can use S3 optimization: verify mode and files are on S3
+    let use_s3_optimization = verify && parse_s3_url(snapshot.manifest_list()).is_some();
+
+    if use_s3_optimization {
+        // Try to build an S3 client from the table's FileIO credentials
+        debug!("Attempting to build S3 client from FileIO for optimized verification");
+        if let Some(s3_client) = s3_client_from_file_io(table.file_io().clone()) {
+            debug!("Using S3 prefix listing for optimized file verification");
+            return handle_snapshot_files_with_s3_cache(table, snapshot, output, &s3_client).await;
+        }
+        debug!("Could not build S3 client from FileIO, falling back to streaming verification");
+    }
+
+    handle_snapshot_files_streaming(table, snapshot, verify, output).await
+}
+
+/// Verify snapshot files using S3 prefix listing (optimized path).
+///
+/// This approach:
+/// 1. Reads all manifests to collect data file paths
+/// 2. Builds an S3FileCache by listing the common prefix
+/// 3. Checks existence against the cache (no HeadObject calls)
+async fn handle_snapshot_files_with_s3_cache<W: Write>(
+    table: &Table,
+    snapshot: &iceberg::spec::Snapshot,
+    output: &mut TerminalOutput<W>,
+    s3_client: &aws_sdk_s3::Client,
+) -> Result<()> {
+    let file_io = table.file_io();
+    let format_version = table.metadata().format_version();
+
+    // Phase 1: Output manifest list and collect manifests
+    let manifest_list_location = snapshot.manifest_list();
+    output.display_object(&FileRecord {
+        r#type: FileType::ManifestList,
+        path: manifest_list_location.to_string(),
+        exists: Some(true),
+    })?;
+
+    let manifest_list_bytes = fetch_bytes(file_io, manifest_list_location).await?;
+    let manifest_list = ManifestList::parse_with_version(&manifest_list_bytes, format_version)
+        .context("Failed to parse manifest list")?;
+
+    // Phase 2: Read all manifests and collect data file paths
+    let mut all_data_files: Vec<String> = Vec::new();
+    let mut manifest_records: Vec<FileRecord> = Vec::new();
+
+    let tasks = manifest_list.entries().iter().map(|manifest_file| {
+        let manifest_location = manifest_file.manifest_path.clone();
+        let file_io = file_io.clone();
+        async move {
+            let bytes_result = fetch_bytes(&file_io, &manifest_location).await;
+            (manifest_location, bytes_result)
+        }
+    });
+
+    let mut stream = stream::iter(tasks).buffered(7);
+
+    while let Some((manifest_location, bytes_result)) = stream.next().await {
+        manifest_records.push(FileRecord {
+            r#type: FileType::Manifest,
+            path: manifest_location.clone(),
+            exists: Some(true),
+        });
+
+        let manifest_bytes = bytes_result?;
+        let manifest =
+            Manifest::parse_avro(manifest_bytes.as_slice()).context("Failed to parse manifest")?;
+
+        let data_files: Vec<String> = manifest
+            .entries()
+            .iter()
+            .filter(|entry| {
+                entry.status() == iceberg::spec::ManifestStatus::Added
+                    || entry.status() == iceberg::spec::ManifestStatus::Existing
+            })
+            .map(|entry| entry.data_file().file_path().to_string())
+            .collect();
+
+        all_data_files.extend(data_files);
+    }
+
+    // Phase 3: Build S3 cache from collected paths
+    debug!(
+        "Building S3 file cache for {} data files",
+        all_data_files.len()
+    );
+    let s3_cache = S3FileCache::new(s3_client, &all_data_files).await?;
+    debug!("S3 cache contains {} files", s3_cache.len());
+
+    // Phase 4: Output manifest records
+    for record in manifest_records {
+        output.display_object(&record)?;
+    }
+
+    // Phase 5: Output data file records with existence from cache
+    let mut missing_count = 0;
+    for path in all_data_files {
+        let exists = s3_cache.exists(&path);
+        if !exists {
+            missing_count += 1;
+        }
+        output.display_object(&FileRecord {
+            r#type: FileType::Data,
+            path,
+            exists: Some(exists),
+        })?;
+    }
+
+    if missing_count > 0 {
+        return Err(anyhow::Error::new(ExpectedError::Failed(format!(
+            "table is corrupt - {} file(s) missing",
+            missing_count
+        ))));
+    }
+
+    Ok(())
+}
+
+/// Stream snapshot files with per-file existence checks (fallback path).
+async fn handle_snapshot_files_streaming<W: Write>(
     table: &Table,
     snapshot: &iceberg::spec::Snapshot,
     verify: bool,
