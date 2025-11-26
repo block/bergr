@@ -33,9 +33,7 @@ async fn list_namespaces<W: Write>(
 ) -> Result<()> {
     let namespaces = catalog.list_namespaces(None).await?;
 
-    let namespace_stream = stream::iter(namespaces.into_iter().map(|ns| {
-        Ok(ns.to_string())
-    }));
+    let namespace_stream = stream::iter(namespaces.into_iter().map(|ns| Ok(ns.to_string())));
 
     output.display_stream(namespace_stream).await
 }
@@ -76,9 +74,11 @@ async fn list_tables_in_namespace<W: Write>(
 
     let tables = catalog.list_tables(&namespace_ident).await?;
 
-    let table_stream = stream::iter(tables.into_iter().map(|table_ident| {
-        Ok(table_ident.to_string())
-    }));
+    let table_stream = stream::iter(
+        tables
+            .into_iter()
+            .map(|table_ident| Ok(table_ident.to_string())),
+    );
 
     output.display_stream(table_stream).await
 }

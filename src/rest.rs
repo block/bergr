@@ -3,7 +3,7 @@
 use anyhow::Result;
 use iceberg::CatalogBuilder;
 use iceberg_catalog_rest::{
-    RestCatalog, RestCatalogBuilder, REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE,
+    REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE, RestCatalog, RestCatalogBuilder,
 };
 use std::collections::HashMap;
 

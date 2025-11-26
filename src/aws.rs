@@ -4,7 +4,9 @@ use anyhow::Result;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use iceberg::CatalogBuilder;
-use iceberg::io::{FileIO, FileIOBuilder, S3_ACCESS_KEY_ID, S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN};
+use iceberg::io::{
+    FileIO, FileIOBuilder, S3_ACCESS_KEY_ID, S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN,
+};
 use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
     GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalog, GlueCatalogBuilder,

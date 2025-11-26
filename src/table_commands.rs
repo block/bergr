@@ -3,10 +3,10 @@ use crate::terminal_output::TerminalOutput;
 use anyhow::{Context, Result};
 use async_stream::try_stream;
 use futures::{Stream, StreamExt, stream};
+use iceberg::TableIdent;
 use iceberg::io::FileIO;
 use iceberg::spec::{Manifest, ManifestList, TableMetadata};
 use iceberg::table::{StaticTable, Table};
-use iceberg::TableIdent;
 use serde::Serialize;
 use std::io::Write;
 use strum::AsRefStr;
@@ -31,7 +31,8 @@ struct FileRecord {
 #[instrument(skip(file_io))]
 pub async fn load_table(file_io: &FileIO, location: &str) -> Result<Table> {
     let table_ident = TableIdent::from_strs(["bergr", "table"])?;
-    let static_table = StaticTable::from_metadata_file(location, table_ident, file_io.clone()).await?;
+    let static_table =
+        StaticTable::from_metadata_file(location, table_ident, file_io.clone()).await?;
     Ok(static_table.into_table())
 }
 
@@ -121,18 +122,24 @@ async fn handle_snapshot<W: Write>(
 
     match command {
         None => output.display_object(snapshot),
-        Some(SnapshotCmd::Files) => {
-            let stream =
-                iterate_files(table.file_io(), snapshot, metadata.format_version()).map(|result| {
-                    result.map(|(file_type, path)| FileRecord {
-                        r#type: file_type.as_ref().to_string(),
-                        path,
-                    })
-                });
-
-            output.display_stream(stream).await
-        }
+        Some(SnapshotCmd::Files) => handle_snapshot_files(table, snapshot, output).await,
     }
+}
+
+async fn handle_snapshot_files<W: Write>(
+    table: &Table,
+    snapshot: &iceberg::spec::Snapshot,
+    output: &mut TerminalOutput<W>,
+) -> Result<()> {
+    let stream =
+        iterate_files(table.file_io(), snapshot, table.metadata().format_version()).map(|result| {
+            result.map(|(file_type, path)| FileRecord {
+                r#type: file_type.as_ref().to_string(),
+                path,
+            })
+        });
+
+    output.display_stream(stream).await
 }
 
 #[instrument(skip(file_io))]
