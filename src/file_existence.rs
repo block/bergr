@@ -13,6 +13,7 @@ use iceberg::io::{FileIO, S3_ACCESS_KEY_ID, S3_REGION, S3_SECRET_ACCESS_KEY, S3_
 use std::collections::HashMap;
 use std::collections::HashSet;
 use tracing::debug;
+use tracing::info;
 
 /// Checks whether files exist at given locations.
 #[async_trait]
@@ -102,7 +103,7 @@ async fn list_objects_with_prefix(
     bucket: &str,
     prefix: &str,
 ) -> Result<HashSet<String>> {
-    debug!(bucket = %bucket, prefix = %prefix, "Listing S3 objects");
+    info!(bucket = %bucket, prefix = %prefix, "Listing S3 objects");
     let mut existing_files = HashSet::new();
 
     let mut paginator = client
