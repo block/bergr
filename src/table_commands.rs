@@ -127,7 +127,7 @@ async fn handle_snapshot<W: Write>(
         None => output.display_object(snapshot),
         Some(SnapshotCmd::Files { verify }) => {
             let existence_checker: Option<Box<dyn FileExistenceChecker>> = if verify {
-                let prefix = data_file_prefix(table.metadata());
+                let prefix = data_file_prefix(table.metadata())?;
                 Some(create_existence_checker(table.file_io().clone(), &prefix).await?)
             } else {
                 None
@@ -137,18 +137,13 @@ async fn handle_snapshot<W: Write>(
     }
 }
 
-/// Iceberg table property for custom data file location.
-const WRITE_DATA_LOCATION: &str = "write.data.path";
-
 /// Derives the data file prefix for a table.
-///
-/// Uses the `write.data.path` property if set, otherwise `{location}/data/`.
-fn data_file_prefix(metadata: &TableMetadata) -> String {
-    metadata
-        .properties()
-        .get(WRITE_DATA_LOCATION)
-        .map(|path| format!("{}/", path.trim_end_matches('/')))
-        .unwrap_or_else(|| format!("{}/data/", metadata.location().trim_end_matches('/')))
+fn data_file_prefix(metadata: &TableMetadata) -> Result<String> {
+    use iceberg::writer::file_writer::location_generator::{
+        DefaultLocationGenerator, LocationGenerator,
+    };
+    let generator = DefaultLocationGenerator::new(metadata.clone())?;
+    Ok(generator.generate_location(None, ""))
 }
 
 async fn handle_snapshot_files<W: Write>(
