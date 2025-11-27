@@ -104,27 +104,20 @@ async fn list_objects_with_prefix(
 ) -> Result<HashSet<String>> {
     debug!(bucket = %bucket, prefix = %prefix, "Listing S3 objects");
     let mut existing_files = HashSet::new();
-    let mut continuation_token: Option<String> = None;
 
-    loop {
-        let mut request = client.list_objects_v2().bucket(bucket).prefix(prefix);
+    let mut paginator = client
+        .list_objects_v2()
+        .bucket(bucket)
+        .prefix(prefix)
+        .into_paginator()
+        .send();
 
-        if let Some(token) = continuation_token {
-            request = request.continuation_token(token);
-        }
-
-        let response = request.send().await.context("Failed to list S3 objects")?;
-
-        for object in response.contents() {
+    while let Some(result) = paginator.next().await {
+        let page = result.context("Failed to list S3 objects")?;
+        for object in page.contents() {
             if let Some(key) = object.key() {
                 existing_files.insert(format!("s3://{}/{}", bucket, key));
             }
-        }
-
-        if response.is_truncated() == Some(true) {
-            continuation_token = response.next_continuation_token().map(|s| s.to_string());
-        } else {
-            break;
         }
     }
 
