@@ -156,26 +156,22 @@ async fn handle_snapshot_files<W: Write>(
     let stream = iterate_files(table, snapshot, existence_checker.as_deref());
 
     // Count missing files while displaying the stream
-    let mut missing_count = 0;
-    let mut stream = Box::pin(stream);
-
-    while let Some(result) = stream.next().await {
-        let record = result?;
-
-        // Check if this is a missing file
-        if record.exists == Some(false) {
-            missing_count += 1;
+    let missing_count = std::cell::Cell::new(0usize);
+    let counting_stream = stream.inspect(|result| {
+        if let Ok(record) = result {
+            if record.exists == Some(false) {
+                missing_count.set(missing_count.get() + 1);
+            }
         }
+    });
 
-        // Display the record
-        output.display_object(&record)?;
-    }
+    output.display_stream(counting_stream).await?;
 
     // If verifying and any files are missing, return a Failed error
-    if existence_checker.is_some() && missing_count > 0 {
+    if verify && missing_count.get() > 0 {
         return Err(anyhow::Error::new(ExpectedError::Failed(format!(
             "table is corrupt - {} file(s) missing",
-            missing_count
+            missing_count.get()
         ))));
     }
 
