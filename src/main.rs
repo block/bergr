@@ -59,7 +59,7 @@ async fn main() {
 
 async fn run(command: Commands) -> Result<()> {
     match command {
-        Commands::At { location, command } => {
+        Commands::From { location, command } => {
             let file_io = build_file_io(&location).await?;
             let table = load_table(&file_io, &location).await?;
             let mut output = TerminalOutput::new();

@@ -14,8 +14,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Operate on a table at a specific location
-    At {
+    /// Operate on a table from a specific location
+    From {
         /// The location of the table or metadata file (e.g., s3://bucket/path/to/metadata.json)
         location: String,
 
