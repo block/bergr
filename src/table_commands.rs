@@ -126,13 +126,7 @@ async fn handle_snapshot<W: Write>(
     match command {
         None => output.display_object(snapshot),
         Some(SnapshotCmd::Files { verify }) => {
-            let existence_checker: Option<Box<dyn FileExistenceChecker>> = if verify {
-                let prefix = data_file_prefix(table.metadata())?;
-                Some(create_existence_checker(table.file_io().clone(), &prefix).await?)
-            } else {
-                None
-            };
-            handle_snapshot_files(table, snapshot, existence_checker, output).await
+            handle_snapshot_files(table, snapshot, verify, output).await
         }
     }
 }
@@ -149,9 +143,16 @@ fn data_file_prefix(metadata: &TableMetadata) -> Result<String> {
 async fn handle_snapshot_files<W: Write>(
     table: &Table,
     snapshot: &iceberg::spec::Snapshot,
-    existence_checker: Option<Box<dyn FileExistenceChecker>>,
+    verify: bool,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
+    let existence_checker: Option<Box<dyn FileExistenceChecker>> = if verify {
+        let prefix = data_file_prefix(table.metadata())?;
+        Some(create_existence_checker(table.file_io().clone(), &prefix).await?)
+    } else {
+        None
+    };
+
     let stream = iterate_files(table, snapshot, existence_checker.as_deref());
 
     // Count missing files while displaying the stream
