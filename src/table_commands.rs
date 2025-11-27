@@ -53,7 +53,7 @@ pub async fn handle_table_command<W: Write>(
         TableCommands::Snapshot {
             snapshot_id,
             command,
-        } => handle_snapshot(&table, &snapshot_id, command, output).await,
+        } => handle_snapshot(table, &snapshot_id, command, output).await,
     }
 }
 
@@ -158,10 +158,10 @@ async fn handle_snapshot_files<W: Write>(
     // Count missing files while displaying the stream
     let missing_count = std::cell::Cell::new(0usize);
     let counting_stream = stream.inspect(|result| {
-        if let Ok(record) = result {
-            if record.exists == Some(false) {
-                missing_count.set(missing_count.get() + 1);
-            }
+        if let Ok(record) = result
+            && record.exists == Some(false)
+        {
+            missing_count.set(missing_count.get() + 1);
         }
     });
 

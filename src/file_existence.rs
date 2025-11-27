@@ -71,15 +71,15 @@ pub async fn create_existence_checker(
     debug!(data_prefix = %data_prefix, "Creating file existence checker");
 
     // Try S3 optimization: parse URL and build client
-    if let Some((bucket, prefix)) = parse_s3_url(data_prefix) {
-        if let Some(client) = s3_client_from_file_io(file_io.clone()) {
-            let locations = list_objects_with_prefix(&client, bucket, prefix).await?;
-            debug!(
-                file_count = locations.len(),
-                "Using preloaded S3 existence checker"
-            );
-            return Ok(Box::new(PreloadedExistenceChecker::new(locations)));
-        }
+    if let Some((bucket, prefix)) = parse_s3_url(data_prefix)
+        && let Some(client) = s3_client_from_file_io(file_io.clone())
+    {
+        let locations = list_objects_with_prefix(&client, bucket, prefix).await?;
+        debug!(
+            file_count = locations.len(),
+            "Using preloaded S3 existence checker"
+        );
+        return Ok(Box::new(PreloadedExistenceChecker::new(locations)));
     }
 
     debug!("Using FileIO existence checker");

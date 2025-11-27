@@ -55,14 +55,14 @@ pub async fn s3_file_io(aws_config: &aws_config::SdkConfig) -> Result<FileIO> {
     }
 
     // Extract and add credentials from AWS SDK
-    if let Some(creds_provider) = aws_config.credentials_provider() {
-        if let Ok(creds) = creds_provider.provide_credentials().await {
-            builder = builder.with_prop(S3_ACCESS_KEY_ID, creds.access_key_id());
-            builder = builder.with_prop(S3_SECRET_ACCESS_KEY, creds.secret_access_key());
+    if let Some(creds_provider) = aws_config.credentials_provider()
+        && let Ok(creds) = creds_provider.provide_credentials().await
+    {
+        builder = builder.with_prop(S3_ACCESS_KEY_ID, creds.access_key_id());
+        builder = builder.with_prop(S3_SECRET_ACCESS_KEY, creds.secret_access_key());
 
-            if let Some(session_token) = creds.session_token() {
-                builder = builder.with_prop(S3_SESSION_TOKEN, session_token);
-            }
+        if let Some(session_token) = creds.session_token() {
+            builder = builder.with_prop(S3_SESSION_TOKEN, session_token);
         }
     }
 
@@ -84,20 +84,20 @@ pub async fn glue_catalog(aws_config: &aws_config::SdkConfig) -> Result<GlueCata
     }
 
     // Extract and add credentials from AWS SDK
-    if let Some(creds_provider) = aws_config.credentials_provider() {
-        if let Ok(creds) = creds_provider.provide_credentials().await {
-            props.insert(
-                AWS_ACCESS_KEY_ID.to_string(),
-                creds.access_key_id().to_string(),
-            );
-            props.insert(
-                AWS_SECRET_ACCESS_KEY.to_string(),
-                creds.secret_access_key().to_string(),
-            );
+    if let Some(creds_provider) = aws_config.credentials_provider()
+        && let Ok(creds) = creds_provider.provide_credentials().await
+    {
+        props.insert(
+            AWS_ACCESS_KEY_ID.to_string(),
+            creds.access_key_id().to_string(),
+        );
+        props.insert(
+            AWS_SECRET_ACCESS_KEY.to_string(),
+            creds.secret_access_key().to_string(),
+        );
 
-            if let Some(session_token) = creds.session_token() {
-                props.insert(AWS_SESSION_TOKEN.to_string(), session_token.to_string());
-            }
+        if let Some(session_token) = creds.session_token() {
+            props.insert(AWS_SESSION_TOKEN.to_string(), session_token.to_string());
         }
     }
 
