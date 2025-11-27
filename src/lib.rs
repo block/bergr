@@ -1,8 +1,8 @@
 pub mod aws;
 pub mod catalog_commands;
 pub mod cli;
-pub mod data_location_manifest;
 pub mod error;
+pub mod file_existence;
 pub mod rest;
 pub mod table_commands;
 pub mod terminal_output;

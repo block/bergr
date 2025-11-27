@@ -1,6 +1,6 @@
 use crate::cli::{SnapshotCmd, TableCommands};
-use crate::data_location_manifest::{DataLocationManifest, try_load_data_location_manifest};
 use crate::error::ExpectedError;
+use crate::file_existence::{FileExistenceChecker, create_existence_checker};
 use crate::terminal_output::TerminalOutput;
 use anyhow::{Context, Result};
 use async_stream::try_stream;
@@ -126,7 +126,13 @@ async fn handle_snapshot<W: Write>(
     match command {
         None => output.display_object(snapshot),
         Some(SnapshotCmd::Files { verify }) => {
-            handle_snapshot_files(table, snapshot, verify, output).await
+            let existence_checker: Option<Box<dyn FileExistenceChecker>> = if verify {
+                let prefix = data_file_prefix(table.metadata());
+                Some(create_existence_checker(table.file_io().clone(), &prefix).await?)
+            } else {
+                None
+            };
+            handle_snapshot_files(table, snapshot, existence_checker, output).await
         }
     }
 }
@@ -148,23 +154,14 @@ fn data_file_prefix(metadata: &TableMetadata) -> String {
 async fn handle_snapshot_files<W: Write>(
     table: &Table,
     snapshot: &iceberg::spec::Snapshot,
-    verify: bool,
+    existence_checker: Option<Box<dyn FileExistenceChecker>>,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    // If verifying, try to pre-load a data location manifest
-    let manifest = if verify {
-        let prefix = data_file_prefix(table.metadata());
-        try_load_data_location_manifest(table.file_io().clone(), &prefix).await?
-    } else {
-        None
-    };
-
     let stream = iterate_files(
         table.file_io(),
         snapshot,
         table.metadata().format_version(),
-        verify,
-        manifest.as_ref(),
+        existence_checker.as_deref(),
     );
 
     // Count missing files while displaying the stream
@@ -183,8 +180,8 @@ async fn handle_snapshot_files<W: Write>(
         output.display_object(&record)?;
     }
 
-    // If any files are missing, return a Failed error wrapped in anyhow::Error
-    if verify && missing_count > 0 {
+    // If verifying and any files are missing, return a Failed error
+    if existence_checker.is_some() && missing_count > 0 {
         return Err(anyhow::Error::new(ExpectedError::Failed(format!(
             "table is corrupt - {} file(s) missing",
             missing_count
@@ -194,16 +191,16 @@ async fn handle_snapshot_files<W: Write>(
     Ok(())
 }
 
-#[instrument(skip(file_io, location_manifest))]
+#[instrument(skip(file_io, existence_checker))]
 fn iterate_files<'a>(
     file_io: &'a FileIO,
     snapshot: &'a iceberg::spec::Snapshot,
     format_version: iceberg::spec::FormatVersion,
-    verify: bool,
-    location_manifest: Option<&'a DataLocationManifest>,
+    existence_checker: Option<&'a dyn FileExistenceChecker>,
 ) -> impl Stream<Item = Result<FileRecord>> + 'a {
     try_stream! {
-        let implicitly_exists = if verify { Some(true) } else { None };
+        let verifying = existence_checker.is_some();
+        let implicitly_exists = if verifying { Some(true) } else { None };
         let manifest_list_location = snapshot.manifest_list();
         yield FileRecord {
             r#type: FileType::ManifestList,
@@ -248,40 +245,16 @@ fn iterate_files<'a>(
                 .map(|entry| entry.data_file().file_path().to_string())
                 .collect();
 
-            // Check existence using manifest if available, otherwise fall back to per-file checks
-            if let Some(manifest) = location_manifest {
-                // Fast path: use pre-loaded manifest
-                for path in data_files {
-                    let exists = manifest.contains(&path);
-                    yield FileRecord {
-                        r#type: FileType::Data,
-                        path,
-                        exists: Some(exists),
-                    };
-                }
-            } else {
-                // Slow path: check each file individually
-                let tasks = data_files.into_iter().map(|path| {
-                    let file_io = file_io.clone();
-                    async move {
-                        let exists = if verify {
-                            Some(file_io.exists(&path).await.unwrap_or(false))
-                        } else {
-                            None
-                        };
-                        (path, exists)
-                    }
-                });
-
-                let mut data_stream = stream::iter(tasks).buffered(13);
-
-                while let Some((path, exists)) = data_stream.next().await {
-                    yield FileRecord {
-                        r#type: FileType::Data,
-                        path,
-                        exists,
-                    };
-                }
+            for path in data_files {
+                let exists = match existence_checker {
+                    Some(checker) => Some(checker.exists(&path).await?),
+                    None => None,
+                };
+                yield FileRecord {
+                    r#type: FileType::Data,
+                    path,
+                    exists,
+                };
             }
         }
     }

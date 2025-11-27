@@ -1,9 +1,10 @@
-//! Data location manifest for efficient file existence checking.
+//! File existence checking with optimized implementations.
 //!
-//! This module provides a trait and implementations for checking whether
-//! data files exist, optimized for batch operations.
+//! Provides a trait for checking file existence, with implementations that
+//! either delegate to FileIO or use a pre-loaded set of known locations.
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use aws_config::Region;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
@@ -13,9 +14,78 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use tracing::debug;
 
-/// Parses an S3 URL into bucket and key components.
+/// Checks whether files exist at given locations.
+#[async_trait]
+pub trait FileExistenceChecker: Send + Sync {
+    /// Checks if a file exists at the given path.
+    async fn exists(&self, path: &str) -> Result<bool>;
+}
+
+/// Checks file existence by delegating to FileIO.
+pub struct FileIOExistenceChecker {
+    file_io: FileIO,
+}
+
+impl FileIOExistenceChecker {
+    pub fn new(file_io: FileIO) -> Self {
+        Self { file_io }
+    }
+}
+
+#[async_trait]
+impl FileExistenceChecker for FileIOExistenceChecker {
+    async fn exists(&self, path: &str) -> Result<bool> {
+        Ok(self.file_io.exists(path).await?)
+    }
+}
+
+/// Checks file existence against a pre-loaded set of known locations.
+pub struct PreloadedExistenceChecker {
+    locations: HashSet<String>,
+}
+
+impl PreloadedExistenceChecker {
+    fn new(locations: HashSet<String>) -> Self {
+        Self { locations }
+    }
+}
+
+#[async_trait]
+impl FileExistenceChecker for PreloadedExistenceChecker {
+    async fn exists(&self, path: &str) -> Result<bool> {
+        Ok(self.locations.contains(path))
+    }
+}
+
+/// Creates a file existence checker, using S3 prefix listing if possible.
 ///
-/// Supports both `s3://bucket/key` and `s3a://bucket/key` formats.
+/// If the data prefix is on S3 and we can extract credentials from the FileIO,
+/// returns a `PreloadedExistenceChecker` that has listed all objects under the prefix.
+///
+/// Otherwise, returns a `FileIOExistenceChecker` that delegates to per-file checks.
+pub async fn create_existence_checker(
+    file_io: FileIO,
+    data_prefix: &str,
+) -> Result<Box<dyn FileExistenceChecker>> {
+    debug!(data_prefix = %data_prefix, "Creating file existence checker");
+
+    // Try S3 optimization: parse URL and build client
+    if let Some((bucket, prefix)) = parse_s3_url(data_prefix) {
+        if let Some(client) = s3_client_from_file_io(file_io.clone()) {
+            let locations = list_objects_with_prefix(&client, bucket, prefix).await?;
+            debug!(
+                file_count = locations.len(),
+                "Using preloaded S3 existence checker"
+            );
+            return Ok(Box::new(PreloadedExistenceChecker::new(locations)));
+        }
+    }
+
+    debug!("Using FileIO existence checker");
+    Ok(Box::new(FileIOExistenceChecker::new(file_io)))
+}
+
+/// Parses an S3 URL into bucket and key components.
 fn parse_s3_url(url: &str) -> Option<(&str, &str)> {
     let rest = url
         .strip_prefix("s3://")
@@ -27,8 +97,6 @@ fn parse_s3_url(url: &str) -> Option<(&str, &str)> {
 }
 
 /// Lists all objects in an S3 bucket with the given prefix.
-///
-/// Returns a HashSet of full S3 URLs (s3://bucket/key format).
 async fn list_objects_with_prefix(
     client: &Client,
     bucket: &str,
@@ -63,68 +131,11 @@ async fn list_objects_with_prefix(
     Ok(existing_files)
 }
 
-/// A manifest of data file locations for efficient existence checking.
-pub struct DataLocationManifest {
-    locations: HashSet<String>,
-}
-
-impl DataLocationManifest {
-    /// Creates a manifest from an iterator of file paths.
-    fn from_iter(paths: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            locations: paths.into_iter().collect(),
-        }
-    }
-
-    /// Checks if the manifest contains the given location.
-    pub fn contains(&self, location: &str) -> bool {
-        self.locations.contains(location)
-    }
-}
-
-/// Attempts to load a manifest of existing S3 files under the given prefix.
-///
-/// Returns `Ok(None)` if:
-/// - The prefix is not an S3 URL
-/// - The FileIO is not configured for S3
-///
-/// Returns `Err` if S3 listing fails.
-///
-/// This is designed to be called early, potentially in parallel with other operations,
-/// to pre-populate the manifest before verifying individual files.
-pub async fn try_load_data_location_manifest(
-    file_io: FileIO,
-    data_prefix: &str,
-) -> Result<Option<DataLocationManifest>> {
-    debug!(data_prefix = %data_prefix, "Attempting to pre-load data location manifest");
-
-    // Parse the S3 URL to get bucket and prefix - if not S3, return None
-    let Some((bucket, prefix)) = parse_s3_url(data_prefix) else {
-        return Ok(None);
-    };
-
-    // Try to build an S3 client from the FileIO - if not S3, return None
-    let Some(client) = s3_client_from_file_io(file_io) else {
-        return Ok(None);
-    };
-
-    let existing_files = list_objects_with_prefix(&client, bucket, prefix).await?;
-    debug!(
-        file_count = existing_files.len(),
-        "Pre-loaded data location manifest"
-    );
-    Ok(Some(DataLocationManifest::from_iter(existing_files)))
-}
-
 /// Attempts to build an S3 client from the credentials stored in a FileIO.
-///
-/// Returns `None` if the FileIO is not configured for S3 or lacks credentials.
-/// This consumes the FileIO since `into_builder()` takes ownership.
 fn s3_client_from_file_io(file_io: FileIO) -> Option<Client> {
     let (scheme, props, _extensions) = file_io.into_builder().into_parts();
     debug!(scheme = %scheme, "Extracting S3 credentials from FileIO");
 
-    // Only works for S3-scheme FileIO
     if scheme != "s3" && scheme != "s3a" {
         debug!("FileIO scheme is not S3, cannot build S3 client");
         return None;
@@ -185,17 +196,31 @@ mod tests {
         assert_eq!(parse_s3_url("not-a-url"), None);
     }
 
-    #[test]
-    fn test_data_location_manifest_contains() {
-        let paths = vec![
-            "s3://bucket/data/file1.parquet".to_string(),
-            "s3://bucket/data/file2.parquet".to_string(),
-        ];
+    #[tokio::test]
+    async fn test_preloaded_checker() {
+        let mut locations = HashSet::new();
+        locations.insert("s3://bucket/data/file1.parquet".to_string());
+        locations.insert("s3://bucket/data/file2.parquet".to_string());
 
-        let manifest = DataLocationManifest::from_iter(paths);
+        let checker = PreloadedExistenceChecker::new(locations);
 
-        assert!(manifest.contains("s3://bucket/data/file1.parquet"));
-        assert!(manifest.contains("s3://bucket/data/file2.parquet"));
-        assert!(!manifest.contains("s3://bucket/data/file3.parquet"));
+        assert!(
+            checker
+                .exists("s3://bucket/data/file1.parquet")
+                .await
+                .unwrap()
+        );
+        assert!(
+            checker
+                .exists("s3://bucket/data/file2.parquet")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !checker
+                .exists("s3://bucket/data/file3.parquet")
+                .await
+                .unwrap()
+        );
     }
 }
