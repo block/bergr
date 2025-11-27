@@ -41,20 +41,26 @@ impl FileExistenceChecker for FileIOExistenceChecker {
 }
 
 /// Checks file existence against a pre-loaded set of known locations.
+///
+/// Stores only the suffix of each path (after stripping the common base URL prefix)
+/// to reduce memory usage when there are many files.
 pub struct PreloadedExistenceChecker {
-    locations: HashSet<String>,
+    base_url: String,
+    suffixes: HashSet<Box<str>>,
 }
 
 impl PreloadedExistenceChecker {
-    fn new(locations: HashSet<String>) -> Self {
-        Self { locations }
+    fn new(base_url: String, suffixes: HashSet<Box<str>>) -> Self {
+        Self { base_url, suffixes }
     }
 }
 
 #[async_trait]
 impl FileExistenceChecker for PreloadedExistenceChecker {
     async fn exists(&self, path: &str) -> Result<bool> {
-        Ok(self.locations.contains(path))
+        Ok(path
+            .strip_prefix(&self.base_url)
+            .is_some_and(|suffix| self.suffixes.contains(suffix)))
     }
 }
 
@@ -74,12 +80,13 @@ pub async fn create_existence_checker(
     if let Some((bucket, prefix)) = parse_s3_url(data_prefix)
         && let Some(client) = s3_client_from_file_io(file_io.clone())
     {
-        let locations = list_objects_with_prefix(&client, bucket, prefix).await?;
+        let base_url = format!("s3://{}/{}", bucket, prefix);
+        let suffixes = list_object_suffixes(&client, bucket, prefix).await?;
         debug!(
-            file_count = locations.len(),
+            file_count = suffixes.len(),
             "Using preloaded S3 existence checker"
         );
-        return Ok(Box::new(PreloadedExistenceChecker::new(locations)));
+        return Ok(Box::new(PreloadedExistenceChecker::new(base_url, suffixes)));
     }
 
     debug!("Using FileIO existence checker");
@@ -97,14 +104,16 @@ fn parse_s3_url(url: &str) -> Option<(&str, &str)> {
     Some((bucket, key))
 }
 
-/// Lists all objects in an S3 bucket with the given prefix.
-async fn list_objects_with_prefix(
+/// Lists all objects in an S3 bucket with the given prefix, returning suffixes only.
+///
+/// Returns the portion of each object key after the prefix, to save memory.
+async fn list_object_suffixes(
     client: &Client,
     bucket: &str,
     prefix: &str,
-) -> Result<HashSet<String>> {
+) -> Result<HashSet<Box<str>>> {
     info!(bucket = %bucket, prefix = %prefix, "Listing S3 objects");
-    let mut existing_files = HashSet::new();
+    let mut suffixes = HashSet::new();
 
     let mut paginator = client
         .list_objects_v2()
@@ -117,12 +126,14 @@ async fn list_objects_with_prefix(
         let page = result.context("Failed to list S3 objects")?;
         for object in page.contents() {
             if let Some(key) = object.key() {
-                existing_files.insert(format!("s3://{}/{}", bucket, key));
+                // Strip the prefix to get just the suffix
+                let suffix = key.strip_prefix(prefix).unwrap_or(key);
+                suffixes.insert(suffix.into());
             }
         }
     }
 
-    Ok(existing_files)
+    Ok(suffixes)
 }
 
 /// Attempts to build an S3 client from the credentials stored in a FileIO.
@@ -192,11 +203,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_preloaded_checker() {
-        let mut locations = HashSet::new();
-        locations.insert("s3://bucket/data/file1.parquet".to_string());
-        locations.insert("s3://bucket/data/file2.parquet".to_string());
+        let mut suffixes = HashSet::new();
+        suffixes.insert("file1.parquet".into());
+        suffixes.insert("file2.parquet".into());
 
-        let checker = PreloadedExistenceChecker::new(locations);
+        let checker = PreloadedExistenceChecker::new("s3://bucket/data/".to_string(), suffixes);
 
         assert!(
             checker
@@ -213,6 +224,22 @@ mod tests {
         assert!(
             !checker
                 .exists("s3://bucket/data/file3.parquet")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_preloaded_checker_with_non_matching_prefix() {
+        let mut suffixes = HashSet::new();
+        suffixes.insert("file1.parquet".into());
+
+        let checker = PreloadedExistenceChecker::new("s3://bucket/data/".to_string(), suffixes);
+
+        // Path with different prefix should return false, not panic
+        assert!(
+            !checker
+                .exists("s3://other-bucket/data/file1.parquet")
                 .await
                 .unwrap()
         );
