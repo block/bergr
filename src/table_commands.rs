@@ -103,7 +103,7 @@ async fn handle_snapshots<W: Write>(
 async fn handle_snapshot<W: Write>(
     table: &Table,
     snapshot_id: &str,
-    command: Option<SnapshotCmd>,
+    command: SnapshotCmd,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
     let metadata = table.metadata();
@@ -124,8 +124,8 @@ async fn handle_snapshot<W: Write>(
         .ok_or_else(|| anyhow::anyhow!("Snapshot {} not found", id))?;
 
     match command {
-        None => output.display_object(snapshot),
-        Some(SnapshotCmd::Files { verify }) => {
+        SnapshotCmd::Info => output.display_object(snapshot),
+        SnapshotCmd::Files { verify } => {
             handle_snapshot_files(table, snapshot, verify, output).await
         }
     }
@@ -380,7 +380,7 @@ mod tests {
             &table,
             TableCommands::Snapshot {
                 snapshot_id: "current".to_string(),
-                command: None,
+                command: SnapshotCmd::Info,
             },
             &mut output,
         )
@@ -564,7 +564,7 @@ mod tests {
             &table,
             TableCommands::Snapshot {
                 snapshot_id: "123".to_string(),
-                command: None,
+                command: SnapshotCmd::Info,
             },
             &mut output,
         )
@@ -592,7 +592,7 @@ mod tests {
             &table,
             TableCommands::Snapshot {
                 snapshot_id: "invalid".to_string(),
-                command: None,
+                command: SnapshotCmd::Info,
             },
             &mut output,
         )
@@ -622,7 +622,7 @@ mod tests {
             &table,
             TableCommands::Snapshot {
                 snapshot_id: "999".to_string(),
-                command: None,
+                command: SnapshotCmd::Info,
             },
             &mut output,
         )
@@ -652,7 +652,7 @@ mod tests {
             &table,
             TableCommands::Snapshot {
                 snapshot_id: "current".to_string(),
-                command: None,
+                command: SnapshotCmd::Info,
             },
             &mut output,
         )

@@ -59,12 +59,14 @@ pub enum TableCommands {
         /// The snapshot ID, or "current"
         snapshot_id: String,
         #[command(subcommand)]
-        command: Option<SnapshotCmd>,
+        command: SnapshotCmd,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum SnapshotCmd {
+    /// Show snapshot details
+    Info,
     /// List files in the snapshot
     Files {
         /// Verify that data files exist
@@ -82,7 +84,7 @@ pub enum CatalogCommands {
         /// The namespace name (e.g., "default" or "db.schema")
         name: String,
         #[command(subcommand)]
-        command: Option<NamespaceCmd>,
+        command: NamespaceCmd,
     },
     /// Inspect a specific table
     Table {
@@ -95,6 +97,8 @@ pub enum CatalogCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum NamespaceCmd {
+    /// Show namespace details
+    Info,
     /// List tables in the namespace
     Tables,
 }

@@ -18,8 +18,8 @@ pub async fn handle_catalog_command<W: Write>(
     match command {
         CatalogCommands::Namespaces => list_namespaces(catalog, output).await,
         CatalogCommands::Namespace { name, command } => match command {
-            None => get_namespace(catalog, &name, output).await,
-            Some(NamespaceCmd::Tables) => list_tables_in_namespace(catalog, &name, output).await,
+            NamespaceCmd::Info => get_namespace(catalog, &name, output).await,
+            NamespaceCmd::Tables => list_tables_in_namespace(catalog, &name, output).await,
         },
         CatalogCommands::Table { name, command } => {
             load_and_handle_table(catalog, &name, command, output).await
@@ -105,6 +105,7 @@ async fn load_and_handle_table<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::NamespaceCmd;
     use iceberg::memory::MEMORY_CATALOG_WAREHOUSE;
     use iceberg::{CatalogBuilder, MemoryCatalog, NamespaceIdent};
     use std::collections::HashMap;
@@ -195,7 +196,7 @@ mod tests {
             &catalog,
             CatalogCommands::Namespace {
                 name: "production".to_string(),
-                command: None,
+                command: NamespaceCmd::Info,
             },
             &mut output,
         )
@@ -259,7 +260,7 @@ mod tests {
             &catalog,
             CatalogCommands::Namespace {
                 name: "analytics".to_string(),
-                command: Some(crate::cli::NamespaceCmd::Tables),
+                command: NamespaceCmd::Tables,
             },
             &mut output,
         )
