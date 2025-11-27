@@ -152,12 +152,7 @@ async fn handle_snapshot_files<W: Write>(
     existence_checker: Option<Box<dyn FileExistenceChecker>>,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    let stream = iterate_files(
-        table.file_io(),
-        snapshot,
-        table.metadata().format_version(),
-        existence_checker.as_deref(),
-    );
+    let stream = iterate_files(table, snapshot, existence_checker.as_deref());
 
     // Count missing files while displaying the stream
     let mut missing_count = 0;
@@ -186,14 +181,15 @@ async fn handle_snapshot_files<W: Write>(
     Ok(())
 }
 
-#[instrument(skip(file_io, existence_checker))]
+#[instrument(skip(table, existence_checker))]
 fn iterate_files<'a>(
-    file_io: &'a FileIO,
+    table: &'a Table,
     snapshot: &'a iceberg::spec::Snapshot,
-    format_version: iceberg::spec::FormatVersion,
     existence_checker: Option<&'a dyn FileExistenceChecker>,
 ) -> impl Stream<Item = Result<FileRecord>> + 'a {
     try_stream! {
+        let file_io = table.file_io();
+        let format_version = table.metadata().format_version();
         let verifying = existence_checker.is_some();
         let implicitly_exists = if verifying { Some(true) } else { None };
         let manifest_list_location = snapshot.manifest_list();
@@ -229,14 +225,11 @@ fn iterate_files<'a>(
             let manifest = Manifest::parse_avro(manifest_bytes.as_slice())
                 .context("Failed to parse manifest")?;
 
-            // Collect data file paths
+            // Collect data file paths (excluding deleted entries)
             let data_files: Vec<String> = manifest
                 .entries()
                 .iter()
-                .filter(|entry| {
-                    entry.status() == iceberg::spec::ManifestStatus::Added
-                        || entry.status() == iceberg::spec::ManifestStatus::Existing
-                })
+                .filter(|entry| entry.status() != iceberg::spec::ManifestStatus::Deleted)
                 .map(|entry| entry.data_file().file_path().to_string())
                 .collect();
 
