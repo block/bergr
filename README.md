@@ -1,52 +1,59 @@
 # bergr
 
-`bergr` is a lightweight utility for inspecting [Apache Iceberg](https://iceberg.apache.org/) tables.
-
-It provides both a Command Line Interface (CLI) and a RESTful API to explore your Iceberg catalogs, namespaces, and tables.
+`bergr` is a lightweight CLI for inspecting [Apache Iceberg](https://iceberg.apache.org/) tables.
 
 ## Features
 
-- **Explore Catalogs**: List namespaces and tables.
-- **Inspect Tables**: View table metadata, schemas, and file lists.
-- **REST API**: Serve table information over HTTP for integration with other tools or for easy browsing.
-- **CLI**: Quick access to table details directly from your terminal.
+- **Multiple catalog types**: AWS Glue, REST catalogs, or direct file access
+- **Inspect tables**: View metadata, schemas, snapshots, and data files
+- **Explore catalogs**: List namespaces and tables
 
 ## Installation
 
-(Coming soon)
+```bash
+cargo install --path .
+```
 
 ## Usage
 
-### CLI
+### AWS Glue Data Catalog
 
 ```bash
-# List namespaces
-bergr namespaces
-
-# List tables in a namespace
-bergr namespace <namespace> tables
-
 # Inspect a table
-bergr namespace <namespace> table <table> metadata
-bergr namespace <namespace> table <table> schema
-bergr namespace <namespace> table <table> files
+bergr glue table my_database.my_table metadata
+bergr glue table my_database.my_table snapshots
+bergr glue table my_database.my_table snapshot current info
+bergr glue table my_database.my_table schemas
+
+# List the files in a table (optionally checking they actually exist)
+bergr glue table my_database.my_table snapshot current files
+bergr glue table my_database.my_table snapshot current files --verify
+
+# List databases and tables
+bergr glue namespaces
+bergr glue namespace my_database info
+bergr glue namespace my_database tables
 ```
 
-### Server
-
-Start the REST API server:
+### REST catalog
 
 ```bash
-bergr serve --port 8080
+# Inspect a table
+bergr rest http://localhost:8181 table my_namespace.my_table ...
+
+# List namespaces and tables
+bergr rest http://localhost:8181 namespaces
+bergr rest http://localhost:8181 namespace my_namespace info
+bergr rest http://localhost:8181 namespace my_namespace tables
 ```
 
-Endpoints:
-- `GET /namespaces`
-- `GET /namespace/{namespace}/tables`
-- `GET /namespace/{namespace}/table/{table}`
-- `GET /namespace/{namespace}/table/{table}/metadata`
-- `GET /namespace/{namespace}/table/{table}/schema`
-- `GET /namespace/{namespace}/table/{table}/files`
+### Direct access via metadata file location
+
+```bash
+bergr from s3://bucket/path/to/metadata.json metadata
+bergr from s3://bucket/path/to/metadata.json snapshots
+bergr from s3://bucket/path/to/metadata.json snapshot current info
+```
 
 ## License
 
