@@ -7,7 +7,7 @@ use async_stream::try_stream;
 use futures::{Stream, StreamExt, stream};
 use iceberg::TableIdent;
 use iceberg::io::FileIO;
-use iceberg::spec::{Manifest, ManifestList, TableMetadata};
+use iceberg::spec::{Manifest, ManifestList, Snapshot, Summary, TableMetadata};
 use iceberg::table::{StaticTable, Table};
 use serde::Serialize;
 use std::io::Write;
@@ -28,6 +28,38 @@ struct FileRecord {
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     exists: Option<bool>,
+}
+
+/// Serializable view of an Iceberg Snapshot.
+///
+/// The `Snapshot` type in the iceberg crate lost its `Serialize` impl in v0.8.0,
+/// so we project the fields we need into this struct for JSON output.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct SnapshotInfo {
+    snapshot_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_snapshot_id: Option<i64>,
+    sequence_number: i64,
+    timestamp_ms: i64,
+    manifest_list: String,
+    summary: Summary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_id: Option<i32>,
+}
+
+impl SnapshotInfo {
+    fn from_snapshot(snapshot: &Snapshot) -> Self {
+        Self {
+            snapshot_id: snapshot.snapshot_id(),
+            parent_snapshot_id: snapshot.parent_snapshot_id(),
+            sequence_number: snapshot.sequence_number(),
+            timestamp_ms: snapshot.timestamp_ms(),
+            manifest_list: snapshot.manifest_list().to_string(),
+            summary: snapshot.summary().clone(),
+            schema_id: snapshot.schema_id(),
+        }
+    }
 }
 
 /// Load a Table from a metadata file location
@@ -96,7 +128,11 @@ async fn handle_snapshots<W: Write>(
     metadata: &TableMetadata,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    let snapshots_stream = stream::iter(metadata.snapshots().map(Ok));
+    let snapshots_stream = stream::iter(
+        metadata
+            .snapshots()
+            .map(|s| Ok(SnapshotInfo::from_snapshot(s))),
+    );
     output.display_stream(snapshots_stream).await
 }
 
@@ -124,7 +160,7 @@ async fn handle_snapshot<W: Write>(
         .ok_or_else(|| anyhow::anyhow!("Snapshot {} not found", id))?;
 
     match command {
-        SnapshotCmd::Info => output.display_object(snapshot),
+        SnapshotCmd::Info => output.display_object(&SnapshotInfo::from_snapshot(snapshot)),
         SnapshotCmd::Files { verify } => {
             handle_snapshot_files(table, snapshot, verify, output).await
         }
