@@ -26,7 +26,7 @@ reqsign = "0.19"
 reqwest = "0.13"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-strum = { version = "0.27.2", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
