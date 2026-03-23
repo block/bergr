@@ -78,7 +78,7 @@ pub async fn create_existence_checker(
 
     // Try S3 optimization: parse URL and build client
     if let Some((bucket, prefix)) = parse_s3_url(data_prefix)
-        && let Some(client) = s3_client_from_file_io(file_io.clone())
+        && let Some(client) = s3_client_from_file_io(&file_io)
     {
         let base_url = format!("s3://{}/{}", bucket, prefix);
         let suffixes = list_object_suffixes(&client, bucket, prefix).await?;
@@ -137,16 +137,11 @@ async fn list_object_suffixes(
 }
 
 /// Attempts to build an S3 client from the credentials stored in a FileIO.
-fn s3_client_from_file_io(file_io: FileIO) -> Option<Client> {
-    let (scheme, props, _extensions) = file_io.into_builder().into_parts();
-    debug!(scheme = %scheme, "Extracting S3 credentials from FileIO");
+fn s3_client_from_file_io(file_io: &FileIO) -> Option<Client> {
+    let props = file_io.config().props();
+    debug!("Extracting S3 credentials from FileIO");
 
-    if scheme != "s3" && scheme != "s3a" {
-        debug!("FileIO scheme is not S3, cannot build S3 client");
-        return None;
-    }
-
-    s3_client_from_props(&props)
+    s3_client_from_props(props)
 }
 
 /// Builds an S3 client from a properties map containing S3 credentials.

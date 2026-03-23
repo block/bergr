@@ -290,19 +290,15 @@ async fn fetch_bytes(file_io: &FileIO, location: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iceberg::io::{FileIOBuilder, FileWrite};
-
     async fn create_memory_file_io(files: Vec<(&str, &str)>) -> FileIO {
-        let file_io = FileIOBuilder::new("memory").build().unwrap();
+        let file_io = FileIO::new_with_memory();
 
         for (path, content) in files {
             let output_file = file_io.new_output(path).unwrap();
-            let mut writer = output_file.writer().await.unwrap();
-            writer
+            output_file
                 .write(bytes::Bytes::from(content.to_string()))
                 .await
                 .unwrap();
-            writer.close().await.unwrap();
         }
 
         file_io

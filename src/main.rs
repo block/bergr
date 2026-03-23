@@ -16,7 +16,7 @@ async fn build_file_io(location: &str) -> Result<FileIO> {
         return s3_file_io(&aws_config).await;
     }
 
-    Ok(FileIO::from_path(location)?.build()?)
+    Ok(FileIO::new_with_fs())
 }
 
 #[tokio::main]
