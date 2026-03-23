@@ -10,15 +10,6 @@ use clap::Parser;
 use iceberg::io::FileIO;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-async fn build_file_io(location: &str) -> Result<FileIO> {
-    if location.starts_with("s3://") || location.starts_with("s3a://") {
-        let aws_config = get_aws_config().await;
-        return s3_file_io(&aws_config).await;
-    }
-
-    Ok(FileIO::new_with_fs())
-}
-
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -60,16 +51,26 @@ async fn main() {
 async fn run(command: Commands) -> Result<()> {
     match command {
         Commands::From { location, command } => {
-            let file_io = build_file_io(&location).await?;
+            let is_s3 = location.starts_with("s3://") || location.starts_with("s3a://");
+            let (file_io, s3) = if is_s3 {
+                let aws_config = get_aws_config().await;
+                (
+                    s3_file_io(&aws_config),
+                    Some(aws_sdk_s3::Client::new(&aws_config)),
+                )
+            } else {
+                (FileIO::new_with_fs(), None)
+            };
             let table = load_table(&file_io, &location).await?;
             let mut output = TerminalOutput::new();
-            handle_table_command(&table, command, &mut output).await?;
+            handle_table_command(&table, command, &mut output, s3.as_ref()).await?;
         }
         Commands::Glue { command } => {
             let aws_config = get_aws_config().await;
             let catalog = glue_catalog(&aws_config).await?;
+            let s3 = aws_sdk_s3::Client::new(&aws_config);
             let mut output = TerminalOutput::new();
-            handle_catalog_command(&catalog, command, &mut output).await?;
+            handle_catalog_command(&catalog, command, &mut output, Some(&s3)).await?;
         }
         Commands::Rest {
             uri,
@@ -78,7 +79,7 @@ async fn run(command: Commands) -> Result<()> {
         } => {
             let catalog = rest_catalog(&uri, warehouse.as_deref()).await?;
             let mut output = TerminalOutput::new();
-            handle_catalog_command(&catalog, command, &mut output).await?;
+            handle_catalog_command(&catalog, command, &mut output, None).await?;
         }
     }
 

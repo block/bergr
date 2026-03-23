@@ -5,12 +5,8 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use aws_config::Region;
-use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Builder as S3ConfigBuilder;
-use iceberg::io::{FileIO, S3_ACCESS_KEY_ID, S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN};
-use std::collections::HashMap;
+use iceberg::io::FileIO;
 use std::collections::HashSet;
 use tracing::debug;
 use tracing::info;
@@ -66,22 +62,23 @@ impl FileExistenceChecker for PreloadedExistenceChecker {
 
 /// Creates a file existence checker, using S3 prefix listing if possible.
 ///
-/// If the data prefix is on S3 and we can extract credentials from the FileIO,
-/// returns a `PreloadedExistenceChecker` that has listed all objects under the prefix.
+/// If the data prefix is on S3 and an S3 client is provided, uses a bulk
+/// `ListObjectsV2` call and returns a `PreloadedExistenceChecker`.
 ///
 /// Otherwise, returns a `FileIOExistenceChecker` that delegates to per-file checks.
 pub async fn create_existence_checker(
     file_io: FileIO,
     data_prefix: &str,
+    s3_client: Option<&Client>,
 ) -> Result<Box<dyn FileExistenceChecker>> {
     debug!(data_prefix = %data_prefix, "Creating file existence checker");
 
-    // Try S3 optimization: parse URL and build client
+    // Try S3 optimization: parse URL and use provided client
     if let Some((bucket, prefix)) = parse_s3_url(data_prefix)
-        && let Some(client) = s3_client_from_file_io(&file_io)
+        && let Some(client) = s3_client
     {
         let base_url = format!("s3://{}/{}", bucket, prefix);
-        let suffixes = list_object_suffixes(&client, bucket, prefix).await?;
+        let suffixes = list_object_suffixes(client, bucket, prefix).await?;
         debug!(
             file_count = suffixes.len(),
             "Using preloaded S3 existence checker"
@@ -134,48 +131,6 @@ async fn list_object_suffixes(
     }
 
     Ok(suffixes)
-}
-
-/// Attempts to build an S3 client from the credentials stored in a FileIO.
-fn s3_client_from_file_io(file_io: &FileIO) -> Option<Client> {
-    let props = file_io.config().props();
-    debug!("Extracting S3 credentials from FileIO");
-
-    s3_client_from_props(props)
-}
-
-/// Builds an S3 client from a properties map containing S3 credentials.
-fn s3_client_from_props(props: &HashMap<String, String>) -> Option<Client> {
-    let access_key_id = props.get(S3_ACCESS_KEY_ID);
-    let secret_access_key = props.get(S3_SECRET_ACCESS_KEY);
-    let region = props.get(S3_REGION);
-
-    debug!(
-        has_access_key = access_key_id.is_some(),
-        has_secret_key = secret_access_key.is_some(),
-        has_region = region.is_some(),
-        "Checking FileIO properties for S3 credentials"
-    );
-
-    let access_key_id = access_key_id?;
-    let secret_access_key = secret_access_key?;
-    let region = region?;
-
-    let credentials = Credentials::new(
-        access_key_id,
-        secret_access_key,
-        props.get(S3_SESSION_TOKEN).cloned(),
-        None,
-        "iceberg-file-io",
-    );
-
-    let config = S3ConfigBuilder::new()
-        .behavior_version_latest()
-        .region(Region::new(region.clone()))
-        .credentials_provider(credentials)
-        .build();
-
-    Some(Client::from_conf(config))
 }
 
 #[cfg(test)]
