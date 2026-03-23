@@ -76,6 +76,7 @@ pub async fn handle_table_command<W: Write>(
     table: &Table,
     command: TableCommands,
     output: &mut TerminalOutput<W>,
+    s3_client: Option<&aws_sdk_s3::Client>,
 ) -> Result<()> {
     match command {
         TableCommands::Metadata => handle_metadata(table.metadata(), output),
@@ -85,7 +86,7 @@ pub async fn handle_table_command<W: Write>(
         TableCommands::Snapshot {
             snapshot_id,
             command,
-        } => handle_snapshot(table, &snapshot_id, command, output).await,
+        } => handle_snapshot(table, &snapshot_id, command, s3_client, output).await,
     }
 }
 
@@ -140,6 +141,7 @@ async fn handle_snapshot<W: Write>(
     table: &Table,
     snapshot_id: &str,
     command: SnapshotCmd,
+    s3_client: Option<&aws_sdk_s3::Client>,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
     let metadata = table.metadata();
@@ -162,7 +164,7 @@ async fn handle_snapshot<W: Write>(
     match command {
         SnapshotCmd::Info => output.display_object(&SnapshotInfo::from_snapshot(snapshot)),
         SnapshotCmd::Files { verify } => {
-            handle_snapshot_files(table, snapshot, verify, output).await
+            handle_snapshot_files(table, snapshot, verify, s3_client, output).await
         }
     }
 }
@@ -180,11 +182,12 @@ async fn handle_snapshot_files<W: Write>(
     table: &Table,
     snapshot: &iceberg::spec::Snapshot,
     verify: bool,
+    s3_client: Option<&aws_sdk_s3::Client>,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
     let existence_checker: Option<Box<dyn FileExistenceChecker>> = if verify {
         let prefix = data_file_prefix(table.metadata())?;
-        Some(create_existence_checker(table.file_io().clone(), &prefix).await?)
+        Some(create_existence_checker(table.file_io().clone(), &prefix, s3_client).await?)
     } else {
         None
     };
@@ -384,6 +387,7 @@ mod tests {
                 schema_id: "current".to_string(),
             },
             &mut output,
+            None,
         )
         .await?;
 
@@ -415,6 +419,7 @@ mod tests {
                 command: SnapshotCmd::Info,
             },
             &mut output,
+            None,
         )
         .await?;
 
@@ -438,7 +443,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_table_command(&table, TableCommands::Metadata, &mut output).await?;
+        handle_table_command(&table, TableCommands::Metadata, &mut output, None).await?;
 
         // Verify JSON output contains metadata fields
         let output_str = String::from_utf8(buffer)?;
@@ -460,7 +465,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_table_command(&table, TableCommands::Schemas, &mut output).await?;
+        handle_table_command(&table, TableCommands::Schemas, &mut output, None).await?;
 
         // Verify JSONL output (one schema per line)
         let output_str = String::from_utf8(buffer)?;
@@ -490,6 +495,7 @@ mod tests {
                 schema_id: "0".to_string(),
             },
             &mut output,
+            None,
         )
         .await?;
 
@@ -517,6 +523,7 @@ mod tests {
                 schema_id: "invalid".to_string(),
             },
             &mut output,
+            None,
         )
         .await;
 
@@ -546,6 +553,7 @@ mod tests {
                 schema_id: "999".to_string(),
             },
             &mut output,
+            None,
         )
         .await;
 
@@ -569,7 +577,7 @@ mod tests {
 
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
-        handle_table_command(&table, TableCommands::Snapshots, &mut output).await?;
+        handle_table_command(&table, TableCommands::Snapshots, &mut output, None).await?;
 
         // Verify JSONL output
         let output_str = String::from_utf8(buffer)?;
@@ -599,6 +607,7 @@ mod tests {
                 command: SnapshotCmd::Info,
             },
             &mut output,
+            None,
         )
         .await?;
 
@@ -627,6 +636,7 @@ mod tests {
                 command: SnapshotCmd::Info,
             },
             &mut output,
+            None,
         )
         .await;
 
@@ -657,6 +667,7 @@ mod tests {
                 command: SnapshotCmd::Info,
             },
             &mut output,
+            None,
         )
         .await;
 
@@ -687,6 +698,7 @@ mod tests {
                 command: SnapshotCmd::Info,
             },
             &mut output,
+            None,
         )
         .await;
 

@@ -12,6 +12,7 @@ pub async fn handle_catalog_command<W: Write>(
     catalog: &dyn Catalog,
     command: CatalogCommands,
     output: &mut TerminalOutput<W>,
+    s3_client: Option<&aws_sdk_s3::Client>,
 ) -> Result<()> {
     use crate::cli::NamespaceCmd;
 
@@ -22,7 +23,7 @@ pub async fn handle_catalog_command<W: Write>(
             NamespaceCmd::Tables => list_tables_in_namespace(catalog, &name, output).await,
         },
         CatalogCommands::Table { name, command } => {
-            load_and_handle_table(catalog, &name, command, output).await
+            load_and_handle_table(catalog, &name, command, output, s3_client).await
         }
     }
 }
@@ -88,6 +89,7 @@ async fn load_and_handle_table<W: Write>(
     name: &str,
     command: crate::cli::TableCommands,
     output: &mut TerminalOutput<W>,
+    s3_client: Option<&aws_sdk_s3::Client>,
 ) -> Result<()> {
     // Parse table identifier (e.g., "namespace.table" or "db.schema.table")
     let table_ident = TableIdent::from_strs(name.split('.'))?;
@@ -99,7 +101,7 @@ async fn load_and_handle_table<W: Write>(
         .with_context(|| format!("could not load table '{}'", name))?;
 
     // Delegate to table command handler
-    handle_table_command(&table, command, output).await
+    handle_table_command(&table, command, output, s3_client).await
 }
 
 #[cfg(test)]
@@ -131,7 +133,7 @@ mod tests {
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
 
-        handle_catalog_command(&catalog, CatalogCommands::Namespaces, &mut output).await?;
+        handle_catalog_command(&catalog, CatalogCommands::Namespaces, &mut output, None).await?;
 
         let output_str = String::from_utf8(buffer)?;
         assert_eq!(output_str, "");
@@ -157,7 +159,7 @@ mod tests {
         let mut buffer = Vec::new();
         let mut output = TerminalOutput::with_writer(&mut buffer);
 
-        handle_catalog_command(&catalog, CatalogCommands::Namespaces, &mut output).await?;
+        handle_catalog_command(&catalog, CatalogCommands::Namespaces, &mut output, None).await?;
 
         let output_str = String::from_utf8(buffer)?;
         let lines: Vec<&str> = output_str.lines().collect();
@@ -199,6 +201,7 @@ mod tests {
                 command: NamespaceCmd::Info,
             },
             &mut output,
+            None,
         )
         .await?;
 
@@ -263,6 +266,7 @@ mod tests {
                 command: NamespaceCmd::Tables,
             },
             &mut output,
+            None,
         )
         .await?;
 
@@ -324,6 +328,7 @@ mod tests {
                 command: crate::cli::TableCommands::Metadata,
             },
             &mut output,
+            None,
         )
         .await?;
 
