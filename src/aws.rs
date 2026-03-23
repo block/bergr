@@ -12,7 +12,9 @@ use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
     GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalog, GlueCatalogBuilder,
 };
+use iceberg_storage_opendal::OpenDalStorageFactory;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Build a custom credentials provider chain that only uses Environment and Profile providers.
 /// This explicitly excludes IMDS, ECS, and Web Identity Token providers.
@@ -47,7 +49,11 @@ pub async fn get_aws_config() -> aws_config::SdkConfig {
 }
 
 pub async fn s3_file_io(aws_config: &aws_config::SdkConfig) -> Result<FileIO> {
-    let mut builder = FileIOBuilder::new("s3");
+    let factory = Arc::new(OpenDalStorageFactory::S3 {
+        configured_scheme: "s3".to_string(),
+        customized_credential_load: None,
+    });
+    let mut builder = FileIOBuilder::new(factory);
 
     // Add region from AWS config
     if let Some(region) = aws_config.region() {
@@ -66,7 +72,7 @@ pub async fn s3_file_io(aws_config: &aws_config::SdkConfig) -> Result<FileIO> {
         }
     }
 
-    Ok(builder.build()?)
+    Ok(builder.build())
 }
 
 pub async fn glue_catalog(aws_config: &aws_config::SdkConfig) -> Result<GlueCatalog> {
@@ -101,7 +107,14 @@ pub async fn glue_catalog(aws_config: &aws_config::SdkConfig) -> Result<GlueCata
         }
     }
 
-    let catalog = GlueCatalogBuilder::default().load("glue", props).await?;
+    let factory = Arc::new(OpenDalStorageFactory::S3 {
+        configured_scheme: "s3".to_string(),
+        customized_credential_load: None,
+    });
+    let catalog = GlueCatalogBuilder::default()
+        .with_storage_factory(factory)
+        .load("glue", props)
+        .await?;
 
     Ok(catalog)
 }
@@ -137,7 +150,7 @@ mod tests {
         let file_io = s3_file_io(&aws_config).await?;
 
         // Inspect the properties that were set
-        let (_scheme, props, _extensions) = file_io.into_builder().into_parts();
+        let props = file_io.config().props();
 
         // Verify region was extracted and set
         assert_eq!(props.get(S3_REGION), Some(&"us-west-2".to_string()));
@@ -171,7 +184,7 @@ mod tests {
         let file_io = catalog.file_io();
 
         // Inspect the properties that were passed through
-        let (_scheme, props, _extensions) = file_io.into_builder().into_parts();
+        let props = file_io.config().props();
 
         // Verify region was extracted and set
         assert_eq!(props.get(S3_REGION), Some(&"us-west-2".to_string()));
