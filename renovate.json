@@ -1,4 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"]
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "packageRules": [
+    {
+      "description": "Blocked until iceberg crates upgrade to reqwest 0.13",
+      "matchPackageNames": ["reqwest"],
+      "matchCurrentVersion": "0.12",
+      "enabled": false
+    }
+  ]
 }
