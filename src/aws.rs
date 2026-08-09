@@ -1,7 +1,6 @@
 //! AWS integration utilities for credential loading
 
 use anyhow::Result;
-use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_config::meta::credentials::CredentialsProviderChain;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
@@ -12,8 +11,9 @@ use iceberg_catalog_glue::{
     GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalog, GlueCatalogBuilder,
 };
 use iceberg_storage_opendal::{
-    AwsCredential, AwsCredentialLoad, CustomAwsCredentialLoader, OpenDalStorageFactory,
+    AwsCredential, CustomAwsCredentialLoader, OpenDalStorageFactory, ProvideCredential,
 };
+use reqsign_core::{Context, Error as ReqsignError, ErrorKind, Result as ReqsignResult};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -32,17 +32,26 @@ fn build_credentials_provider() -> SharedCredentialsProvider {
     SharedCredentialsProvider::new(chain)
 }
 
-/// Adapts an AWS SDK credential provider to the `AwsCredentialLoad` trait
-/// used by iceberg-storage-opendal. This allows the iceberg storage layer
-/// to dynamically refresh credentials rather than using static strings.
+/// Adapts an AWS SDK credential provider to the `ProvideCredential` trait
+/// used by iceberg-storage-opendal (via reqsign). This allows the iceberg
+/// storage layer to dynamically refresh credentials rather than using static
+/// strings.
+#[derive(Debug)]
 struct SdkCredentialLoader {
     provider: SharedCredentialsProvider,
 }
 
-#[async_trait]
-impl AwsCredentialLoad for SdkCredentialLoader {
-    async fn load_credential(&self, _: reqwest::Client) -> anyhow::Result<Option<AwsCredential>> {
-        let creds = self.provider.provide_credentials().await?;
+impl ProvideCredential for SdkCredentialLoader {
+    type Credential = AwsCredential;
+
+    async fn provide_credential(&self, _: &Context) -> ReqsignResult<Option<AwsCredential>> {
+        let creds = self.provider.provide_credentials().await.map_err(|e| {
+            ReqsignError::new(
+                ErrorKind::CredentialInvalid,
+                "failed to load AWS credentials",
+            )
+            .with_source(e)
+        })?;
         Ok(Some(AwsCredential {
             access_key_id: creds.access_key_id().to_string(),
             secret_access_key: creds.secret_access_key().to_string(),
@@ -56,13 +65,12 @@ impl AwsCredentialLoad for SdkCredentialLoader {
 fn credential_loader(aws_config: &aws_config::SdkConfig) -> Option<CustomAwsCredentialLoader> {
     aws_config
         .credentials_provider()
-        .map(|provider| CustomAwsCredentialLoader::new(Arc::new(SdkCredentialLoader { provider })))
+        .map(|provider| CustomAwsCredentialLoader::new(SdkCredentialLoader { provider }))
 }
 
 /// Build an `OpenDalStorageFactory` for S3 with optional dynamic credentials.
 fn s3_storage_factory(aws_config: &aws_config::SdkConfig) -> Arc<OpenDalStorageFactory> {
     Arc::new(OpenDalStorageFactory::S3 {
-        configured_scheme: "s3".to_string(),
         customized_credential_load: credential_loader(aws_config),
     })
 }
@@ -164,12 +172,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_credential_loader_returns_credentials() {
+    async fn test_sdk_credential_loader_returns_credentials() {
         let aws_config = test_aws_config().await;
-        let loader = credential_loader(&aws_config).expect("should have a credential loader");
+        let provider = aws_config
+            .credentials_provider()
+            .expect("should have a credentials provider");
+        let loader = SdkCredentialLoader { provider };
 
         let cred = loader
-            .load_credential(reqwest::Client::new())
+            .provide_credential(&Context::new())
             .await
             .expect("should load credential")
             .expect("should have credential");

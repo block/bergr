@@ -174,7 +174,7 @@ fn data_file_prefix(metadata: &TableMetadata) -> Result<String> {
     use iceberg::writer::file_writer::location_generator::{
         DefaultLocationGenerator, LocationGenerator,
     };
-    let generator = DefaultLocationGenerator::new(metadata.clone())?;
+    let generator = DefaultLocationGenerator::new(metadata)?;
     Ok(generator.generate_location(None, ""))
 }
 
