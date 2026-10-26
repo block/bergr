@@ -24,10 +24,8 @@ iceberg-catalog-glue = "0.10.0"
 iceberg-catalog-rest = "0.10.0"
 iceberg-storage-opendal = "0.10.0"
 reqsign-core = "3.3.0"
-reqwest = "0.12"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-strum = { version = "0.28.0", features = ["derive"] }
 tokio = { version = "1.48.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
