@@ -7,17 +7,8 @@ use iceberg_catalog_rest::{
 };
 use std::collections::HashMap;
 
-/// Create a REST catalog with the given URI and optional warehouse location
-///
-/// # Arguments
-///
-/// * `uri` - The REST catalog endpoint URL (e.g., "http://localhost:8181")
-/// * `warehouse` - Optional warehouse location (e.g., "s3://my-bucket/warehouse")
-///
-/// # Returns
-///
-/// A configured `RestCatalog` instance
-pub async fn rest_catalog(uri: &str, warehouse: Option<&str>) -> Result<RestCatalog> {
+/// Catalog properties for a REST catalog with the given URI and optional warehouse
+pub fn rest_catalog_props(uri: &str, warehouse: Option<&str>) -> HashMap<String, String> {
     let mut props = HashMap::new();
 
     // Required: REST catalog URI
@@ -31,7 +22,23 @@ pub async fn rest_catalog(uri: &str, warehouse: Option<&str>) -> Result<RestCata
         warehouse_value.to_string(),
     );
 
-    let catalog = RestCatalogBuilder::default().load("rest", props).await?;
+    props
+}
+
+/// Create a REST catalog with the given URI and optional warehouse location
+///
+/// # Arguments
+///
+/// * `uri` - The REST catalog endpoint URL (e.g., "http://localhost:8181")
+/// * `warehouse` - Optional warehouse location (e.g., "s3://my-bucket/warehouse")
+///
+/// # Returns
+///
+/// A configured `RestCatalog` instance
+pub async fn rest_catalog(uri: &str, warehouse: Option<&str>) -> Result<RestCatalog> {
+    let catalog = RestCatalogBuilder::default()
+        .load("rest", rest_catalog_props(uri, warehouse))
+        .await?;
 
     Ok(catalog)
 }

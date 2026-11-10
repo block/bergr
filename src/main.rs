@@ -1,9 +1,11 @@
 use anyhow::Result;
-use bergr::aws::{get_aws_config, glue_catalog, s3_file_io};
+use aws_config::Region;
+use bergr::aws::{aws_rest_catalog, get_aws_config, glue_catalog, s3_file_io};
 use bergr::catalog_commands::handle_catalog_command;
 use bergr::cli::{Cli, Commands};
 use bergr::error::ExpectedError;
 use bergr::rest::rest_catalog;
+use bergr::sigv4::SigningScope;
 use bergr::table_commands::{handle_table_command, load_table};
 use bergr::terminal_output::TerminalOutput;
 use clap::Parser;
@@ -77,9 +79,24 @@ async fn run(command: Commands) -> Result<()> {
             warehouse,
             command,
         } => {
-            let catalog = rest_catalog(&uri, warehouse.as_deref()).await?;
             let mut output = TerminalOutput::new();
-            handle_catalog_command(&catalog, command, &mut output, None).await?;
+            match SigningScope::from_uri(&uri) {
+                Some(scope) => {
+                    let aws_config = get_aws_config()
+                        .await
+                        .to_builder()
+                        .region(Region::new(scope.region.clone()))
+                        .build();
+                    let catalog =
+                        aws_rest_catalog(&aws_config, scope, &uri, warehouse.as_deref()).await?;
+                    let s3 = aws_sdk_s3::Client::new(&aws_config);
+                    handle_catalog_command(&catalog, command, &mut output, Some(&s3)).await?;
+                }
+                None => {
+                    let catalog = rest_catalog(&uri, warehouse.as_deref()).await?;
+                    handle_catalog_command(&catalog, command, &mut output, None).await?;
+                }
+            }
         }
     }
 
