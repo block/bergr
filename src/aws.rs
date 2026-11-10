@@ -1,6 +1,8 @@
 //! AWS integration utilities for credential loading
 
-use anyhow::Result;
+use crate::rest::rest_catalog_props;
+use crate::sigv4::{SigV4AuthManager, SigningScope};
+use anyhow::{Context as _, Result};
 use aws_config::BehaviorVersion;
 use aws_config::meta::credentials::CredentialsProviderChain;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
@@ -10,6 +12,7 @@ use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
     GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalog, GlueCatalogBuilder,
 };
+use iceberg_catalog_rest::{RestCatalog, RestCatalogBuilder};
 use iceberg_storage_opendal::{
     AwsCredential, CustomAwsCredentialLoader, OpenDalStorageFactory, ProvideCredential,
 };
@@ -135,6 +138,29 @@ pub async fn glue_catalog(aws_config: &aws_config::SdkConfig) -> Result<GlueCata
     let catalog = GlueCatalogBuilder::default()
         .with_storage_factory(s3_storage_factory(aws_config))
         .load("glue", props)
+        .await?;
+
+    Ok(catalog)
+}
+
+/// Create a REST catalog hosted by AWS Glue, with SigV4-signed requests
+pub async fn aws_rest_catalog(
+    aws_config: &aws_config::SdkConfig,
+    scope: SigningScope,
+    uri: &str,
+    warehouse: Option<&str>,
+) -> Result<RestCatalog> {
+    let credentials = aws_config
+        .credentials_provider()
+        .context("AWS credentials not configured")?;
+
+    let mut props = rest_catalog_props(uri, warehouse);
+    props.insert(S3_REGION.to_string(), scope.region.clone());
+
+    let catalog = RestCatalogBuilder::default()
+        .with_auth_manager(SigV4AuthManager::new(scope, credentials))
+        .with_storage_factory(s3_storage_factory(aws_config))
+        .load("rest", props)
         .await?;
 
     Ok(catalog)

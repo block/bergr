@@ -47,6 +47,14 @@ bergr rest http://localhost:8181 namespace my_namespace info
 bergr rest http://localhost:8181 namespace my_namespace tables
 ```
 
+AWS Glue's Iceberg REST endpoint is detected from the URI, and requests to it are signed with SigV4 using your AWS credentials. Pass the catalog ID as the warehouse: the AWS account ID, for the default catalog.
+
+```bash
+bergr rest https://glue.us-west-2.amazonaws.com/iceberg --warehouse 123456789012 namespaces
+```
+
+Glue's REST endpoint needs `glue:GetCatalog` and `lakeformation:GetDataAccess` permissions, in addition to those the `glue` command needs.
+
 ### Direct access via metadata file location
 
 ```bash
