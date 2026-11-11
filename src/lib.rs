@@ -1,9 +1,11 @@
 pub mod aws;
+pub mod basic_auth;
 pub mod catalog_commands;
 pub mod cli;
 pub mod error;
 pub mod file_existence;
 pub mod rest;
+pub mod rest_auth;
 pub mod sigv4;
 pub mod table_commands;
 pub mod terminal_output;
