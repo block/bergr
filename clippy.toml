@@ -1,0 +1,2 @@
+# Lints configured in Cargo.toml [lints.clippy]
+allow-unwrap-in-tests = true

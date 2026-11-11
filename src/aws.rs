@@ -1,5 +1,6 @@
 //! AWS integration utilities for credential loading
 
+use crate::error::ExpectedError;
 use crate::rest::rest_catalog_props;
 use crate::sigv4::{SigV4AuthManager, SigningScope};
 use anyhow::{Context as _, Result};
@@ -78,21 +79,32 @@ fn s3_storage_factory(aws_config: &aws_config::SdkConfig) -> Arc<OpenDalStorageF
     })
 }
 
-pub async fn get_aws_config() -> aws_config::SdkConfig {
+pub async fn get_aws_config() -> Result<aws_config::SdkConfig> {
     let config = aws_config::defaults(BehaviorVersion::latest())
         .credentials_provider(build_credentials_provider())
         .load()
         .await;
 
-    // Try to resolve credentials to detect configuration errors early
-    if let Some(creds_provider) = config.credentials_provider() {
-        creds_provider
-            .provide_credentials()
-            .await
-            .expect("AWS credentials not configured");
-    }
+    check_credentials(&config).await?;
+    Ok(config)
+}
 
-    config
+/// Resolve credentials now, so a missing or broken configuration fails early with a clear error.
+pub async fn check_credentials(aws_config: &aws_config::SdkConfig) -> Result<()> {
+    let Some(provider) = aws_config.credentials_provider() else {
+        return Ok(());
+    };
+    provider
+        .provide_credentials()
+        .await
+        .map(|_| ())
+        .map_err(|err| {
+            ExpectedError::UserInput(format!(
+                "AWS credentials not configured: {:#}",
+                anyhow::Error::new(err)
+            ))
+            .into()
+        })
 }
 
 pub fn s3_file_io(aws_config: &aws_config::SdkConfig) -> FileIO {
@@ -186,6 +198,49 @@ mod tests {
             .credentials_provider(creds)
             .load()
             .await
+    }
+
+    #[derive(Debug)]
+    struct NoCredentials;
+
+    impl ProvideCredentials for NoCredentials {
+        fn provide_credentials<'a>(
+            &'a self,
+        ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+        where
+            Self: 'a,
+        {
+            aws_credential_types::provider::future::ProvideCredentials::ready(Err(
+                aws_credential_types::provider::error::CredentialsError::not_loaded(
+                    "no credentials here",
+                ),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn check_credentials_reports_missing_credentials_as_expected_error() {
+        let aws_config = aws_config::defaults(BehaviorVersion::latest())
+            .credentials_provider(NoCredentials)
+            .load()
+            .await;
+
+        let err = check_credentials(&aws_config).await.unwrap_err();
+
+        let expected = err
+            .downcast_ref::<ExpectedError>()
+            .expect("should be an ExpectedError");
+        assert!(
+            expected.to_string().contains("AWS credentials"),
+            "unexpected message: {expected}"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_credentials_accepts_working_credentials() {
+        let aws_config = test_aws_config().await;
+
+        assert!(check_credentials(&aws_config).await.is_ok());
     }
 
     #[tokio::test]
