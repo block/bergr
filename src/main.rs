@@ -78,6 +78,7 @@ async fn run(command: Commands) -> Result<()> {
             uri,
             warehouse,
             auth,
+            access_delegation,
             command,
         } => {
             let mut output = TerminalOutput::new();
@@ -94,7 +95,8 @@ async fn run(command: Commands) -> Result<()> {
                     handle_catalog_command(&catalog, command, &mut output, Some(&s3)).await?;
                 }
                 RestAuth::Http(auth) => {
-                    let catalog = rest_catalog(&uri, warehouse.as_deref(), &auth).await?;
+                    let catalog =
+                        rest_catalog(&uri, warehouse.as_deref(), &auth, access_delegation).await?;
                     handle_catalog_command(&catalog, command, &mut output, None).await?;
                 }
             }

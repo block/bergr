@@ -82,6 +82,12 @@ BERGR_REST_OAUTH2_CREDENTIAL="$(cat ~/.config/polaris-credential)" BERGR_REST_OA
 
 `bearer` and `oauth2` correspond to the Iceberg REST catalog properties `token`, `credential`, `scope` and `oauth2-server-uri`. `sigv4` currently only supports AWS Glue endpoints (`glue.<region>.amazonaws.com`).
 
+#### Table files
+
+To read a table's files, `bergr rest` asks the catalog for short-lived storage credentials ("vended credentials"), and uses the storage settings the catalog returns with each table. If the catalog doesn't vend credentials, bergr falls back to your own: for S3, the standard AWS credential variables and profile.
+
+Set `--access-delegation none` (or `BERGR_REST_ACCESS_DELEGATION=none`) to tell the catalog that bergr doesn't need vended credentials. This sends `X-Iceberg-Access-Delegation: none` instead of `vended-credentials`. AWS Glue's table files are always read with your AWS credentials.
+
 ### Direct access via metadata file location
 
 ```bash

@@ -1,3 +1,4 @@
+use crate::rest::AccessDelegation;
 use crate::rest_auth::AuthType;
 use clap::{Parser, Subcommand};
 
@@ -41,6 +42,16 @@ pub enum Commands {
         /// environment variables, never from arguments.
         #[arg(long, value_enum, env = "BERGR_REST_AUTH", default_value_t = AuthType::Auto)]
         auth: AuthType,
+
+        /// Whether to ask the catalog for credentials to read table files with. Ignored for
+        /// AWS Glue, whose table files are read with your AWS credentials.
+        #[arg(
+            long,
+            value_enum,
+            env = "BERGR_REST_ACCESS_DELEGATION",
+            default_value_t = AccessDelegation::VendedCredentials
+        )]
+        access_delegation: AccessDelegation,
 
         #[command(subcommand)]
         command: CatalogCommands,
