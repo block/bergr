@@ -73,6 +73,13 @@ BERGR_REST_BEARER_TOKEN="$(cat ~/.config/my-catalog-token)" \
   bergr rest --auth bearer https://catalog.example.com namespaces
 ```
 
+With `oauth2`, bergr exchanges the credential for a token at `<uri>/v1/oauth/tokens` (or `BERGR_REST_OAUTH2_SERVER_URI`, if set), asking for the `catalog` scope unless `BERGR_REST_OAUTH2_SCOPE` says otherwise. Some catalogs need a specific scope: [Apache Polaris](https://polaris.apache.org/), for example, wants `PRINCIPAL_ROLE:ALL`.
+
+```bash
+BERGR_REST_OAUTH2_CREDENTIAL="$(cat ~/.config/polaris-credential)" BERGR_REST_OAUTH2_SCOPE=PRINCIPAL_ROLE:ALL \
+  bergr rest --auth oauth2 http://localhost:8181/api/catalog --warehouse quickstart_catalog namespaces
+```
+
 `bearer` and `oauth2` correspond to the Iceberg REST catalog properties `token`, `credential`, `scope` and `oauth2-server-uri`. `sigv4` currently only supports AWS Glue endpoints (`glue.<region>.amazonaws.com`).
 
 ### Direct access via metadata file location
