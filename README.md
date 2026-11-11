@@ -55,6 +55,26 @@ bergr rest https://glue.us-west-2.amazonaws.com/iceberg --warehouse 123456789012
 
 Glue's REST endpoint needs `glue:GetCatalog` and `lakeformation:GetDataAccess` permissions, in addition to those the `glue` command needs.
 
+#### Authentication
+
+Choose how to authenticate with `--auth`, or set `BERGR_REST_AUTH`. Each type reads its settings, including secrets, from environment variables, so secrets never appear in shell history or `ps`.
+
+| `--auth` | Reads |
+|---|---|
+| `auto` (default) | Behaves as `sigv4` for AWS Glue endpoints, otherwise `none` |
+| `none` | nothing |
+| `sigv4` | the standard AWS credential variables and profile |
+| `bearer` | `BERGR_REST_BEARER_TOKEN` |
+| `basic` | `BERGR_REST_BASIC_USER`, `BERGR_REST_BASIC_PASSWORD` |
+| `oauth2` | `BERGR_REST_OAUTH2_CREDENTIAL` (`client_id:secret`); optionally `BERGR_REST_OAUTH2_SCOPE` and `BERGR_REST_OAUTH2_SERVER_URI` |
+
+```bash
+BERGR_REST_BEARER_TOKEN="$(cat ~/.config/my-catalog-token)" \
+  bergr rest --auth bearer https://catalog.example.com namespaces
+```
+
+`bearer` and `oauth2` correspond to the Iceberg REST catalog properties `token`, `credential`, `scope` and `oauth2-server-uri`. `sigv4` currently only supports AWS Glue endpoints (`glue.<region>.amazonaws.com`).
+
 ### Direct access via metadata file location
 
 ```bash

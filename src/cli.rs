@@ -1,3 +1,4 @@
+use crate::rest_auth::AuthType;
 use clap::{Parser, Subcommand};
 
 /// bergr: A tool for inspecting Apache Iceberg tables
@@ -35,6 +36,11 @@ pub enum Commands {
         /// Optional warehouse location (e.g., s3://my-bucket/warehouse)
         #[arg(long)]
         warehouse: Option<String>,
+
+        /// How to authenticate to the catalog. Settings, including secrets, are read from
+        /// environment variables, never from arguments.
+        #[arg(long, value_enum, env = "BERGR_REST_AUTH", default_value_t = AuthType::Auto)]
+        auth: AuthType,
 
         #[command(subcommand)]
         command: CatalogCommands,

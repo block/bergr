@@ -5,7 +5,7 @@ use bergr::catalog_commands::handle_catalog_command;
 use bergr::cli::{Cli, Commands};
 use bergr::error::ExpectedError;
 use bergr::rest::rest_catalog;
-use bergr::sigv4::SigningScope;
+use bergr::rest_auth::RestAuth;
 use bergr::table_commands::{handle_table_command, load_table};
 use bergr::terminal_output::TerminalOutput;
 use clap::Parser;
@@ -77,11 +77,12 @@ async fn run(command: Commands) -> Result<()> {
         Commands::Rest {
             uri,
             warehouse,
+            auth,
             command,
         } => {
             let mut output = TerminalOutput::new();
-            match SigningScope::from_uri(&uri) {
-                Some(scope) => {
+            match RestAuth::resolve(auth, &uri, |name| std::env::var(name).ok())? {
+                RestAuth::SigV4(scope) => {
                     let aws_config = get_aws_config()
                         .await
                         .to_builder()
@@ -92,8 +93,8 @@ async fn run(command: Commands) -> Result<()> {
                     let s3 = aws_sdk_s3::Client::new(&aws_config);
                     handle_catalog_command(&catalog, command, &mut output, Some(&s3)).await?;
                 }
-                None => {
-                    let catalog = rest_catalog(&uri, warehouse.as_deref()).await?;
+                RestAuth::Http(auth) => {
+                    let catalog = rest_catalog(&uri, warehouse.as_deref(), &auth).await?;
                     handle_catalog_command(&catalog, command, &mut output, None).await?;
                 }
             }
