@@ -12,23 +12,28 @@ use clap::Parser;
 use iceberg::io::FileIO;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Logged at debug level with `--debug`: bergr itself, plus the AWS SDK's Glue, S3 and HTTP operations.
+const DEBUG_TARGETS: [&str; 4] = ["bergr", "aws_sdk_glue", "aws_sdk_s3", "aws_smithy_runtime"];
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
     if cli.debug {
+        let filter = DEBUG_TARGETS.iter().fold(
+            EnvFilter::builder()
+                .with_default_directive(tracing::Level::INFO.into())
+                .from_env_lossy(),
+            |filter, target| {
+                filter.add_directive(
+                    format!("{target}=debug")
+                        .parse()
+                        .expect("debug targets are valid directives"),
+                )
+            },
+        );
         tracing_subscriber::registry()
             .with(fmt::layer().with_writer(std::io::stderr))
-            .with(
-                EnvFilter::builder()
-                    .with_default_directive(tracing::Level::INFO.into())
-                    .from_env_lossy()
-                    .add_directive("bergr=debug".parse().unwrap())
-                    // AWS SDK tracing for Glue, S3, and HTTP operations
-                    .add_directive("aws_sdk_glue=debug".parse().unwrap())
-                    .add_directive("aws_sdk_s3=debug".parse().unwrap())
-                    .add_directive("aws_smithy_runtime=debug".parse().unwrap()),
-            )
+            .with(filter)
             .init();
     }
 
@@ -55,7 +60,7 @@ async fn run(command: Commands) -> Result<()> {
         Commands::From { location, command } => {
             let is_s3 = location.starts_with("s3://") || location.starts_with("s3a://");
             let (file_io, s3) = if is_s3 {
-                let aws_config = get_aws_config().await;
+                let aws_config = get_aws_config().await?;
                 (
                     s3_file_io(&aws_config),
                     Some(aws_sdk_s3::Client::new(&aws_config)),
@@ -68,7 +73,7 @@ async fn run(command: Commands) -> Result<()> {
             handle_table_command(&table, command, &mut output, s3.as_ref()).await?;
         }
         Commands::Glue { command } => {
-            let aws_config = get_aws_config().await;
+            let aws_config = get_aws_config().await?;
             let catalog = glue_catalog(&aws_config).await?;
             let s3 = aws_sdk_s3::Client::new(&aws_config);
             let mut output = TerminalOutput::new();
@@ -85,7 +90,7 @@ async fn run(command: Commands) -> Result<()> {
             match RestAuth::resolve(auth, &uri, |name| std::env::var(name).ok())? {
                 RestAuth::SigV4(scope) => {
                     let aws_config = get_aws_config()
-                        .await
+                        .await?
                         .to_builder()
                         .region(Region::new(scope.region.clone()))
                         .build();
