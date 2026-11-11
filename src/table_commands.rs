@@ -7,9 +7,10 @@ use async_stream::try_stream;
 use futures::{Stream, StreamExt, stream};
 use iceberg::TableIdent;
 use iceberg::io::FileIO;
-use iceberg::spec::{Manifest, ManifestList, Snapshot, Summary, TableMetadata};
+use iceberg::spec::{Manifest, ManifestList, Operation, Snapshot, Summary, TableMetadata};
 use iceberg::table::{StaticTable, Table};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::io::Write;
 use tracing::instrument;
 
@@ -43,9 +44,30 @@ struct SnapshotInfo {
     sequence_number: i64,
     timestamp_ms: i64,
     manifest_list: String,
-    summary: Summary,
+    summary: SummaryInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_id: Option<i32>,
+}
+
+/// A snapshot `Summary` with its properties in sorted order; `Summary` keeps them in a `HashMap`.
+#[derive(Debug, Serialize)]
+struct SummaryInfo {
+    operation: Operation,
+    #[serde(flatten)]
+    properties: BTreeMap<String, String>,
+}
+
+impl SummaryInfo {
+    fn from_summary(summary: &Summary) -> Self {
+        Self {
+            operation: summary.operation.clone(),
+            properties: summary
+                .additional_properties
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        }
+    }
 }
 
 impl SnapshotInfo {
@@ -56,10 +78,18 @@ impl SnapshotInfo {
             sequence_number: snapshot.sequence_number(),
             timestamp_ms: snapshot.timestamp_ms(),
             manifest_list: snapshot.manifest_list().to_string(),
-            summary: snapshot.summary().clone(),
+            summary: SummaryInfo::from_summary(snapshot.summary()),
             schema_id: snapshot.schema_id(),
         }
     }
+}
+
+/// Collects `items` sorted by `key`. Iceberg's `TableMetadata` keeps schemas, snapshots and the
+/// like in `HashMap`s, so their iteration order varies from run to run.
+fn sorted_by_key<T, K: Ord>(items: impl Iterator<Item = T>, key: impl FnMut(&T) -> K) -> Vec<T> {
+    let mut items: Vec<T> = items.collect();
+    items.sort_by_key(key);
+    items
 }
 
 /// Load a Table from a metadata file location
@@ -94,14 +124,51 @@ fn handle_metadata<W: Write>(
     metadata: &TableMetadata,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    output.display_object(metadata)
+    output.display_object(&canonical_metadata(metadata)?)
+}
+
+/// Arrays that `TableMetadata` serialises from `HashMap` values, so in no particular order, with
+/// the fields to order their elements by. Other arrays (schema fields, sort order fields, the
+/// snapshot and metadata logs) are already in a meaningful order and must be left alone.
+const UNORDERED_METADATA_ARRAYS: [(&str, &[&str]); 6] = [
+    ("schemas", &["schema-id"]),
+    ("partition-specs", &["spec-id"]),
+    ("sort-orders", &["order-id"]),
+    (
+        "snapshots",
+        &["sequence-number", "timestamp-ms", "snapshot-id"],
+    ),
+    ("statistics", &["snapshot-id"]),
+    ("partition-statistics", &["snapshot-id"]),
+];
+
+/// Table metadata as JSON, in a stable order. A workaround: iceberg-rust's `Serialize` for
+/// `TableMetadata` emits maps and some arrays in hash order, which varies from run to run.
+/// Converting to a `serde_json::Value` sorts object keys, which covers the map fields
+/// (`properties`, `refs`, snapshot summaries); the unordered arrays are sorted by ID.
+fn canonical_metadata(metadata: &TableMetadata) -> Result<serde_json::Value> {
+    let mut json = serde_json::to_value(metadata)?;
+    UNORDERED_METADATA_ARRAYS.iter().for_each(|(field, keys)| {
+        if let Some(items) = json
+            .get_mut(*field)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            items.sort_by_key(|item| {
+                keys.iter()
+                    .map(|key| item[*key].as_i64())
+                    .collect::<Vec<_>>()
+            });
+        }
+    });
+    Ok(json)
 }
 
 async fn handle_schemas<W: Write>(
     metadata: &TableMetadata,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
-    let schemas_stream = stream::iter(metadata.schemas_iter().map(Ok));
+    let schemas = sorted_by_key(metadata.schemas_iter(), |schema| schema.schema_id());
+    let schemas_stream = stream::iter(schemas.into_iter().map(Ok));
     output.display_stream(schemas_stream).await
 }
 
@@ -129,9 +196,12 @@ async fn handle_snapshots<W: Write>(
     metadata: &TableMetadata,
     output: &mut TerminalOutput<W>,
 ) -> Result<()> {
+    let snapshots = sorted_by_key(metadata.snapshots(), |s| {
+        (s.sequence_number(), s.timestamp_ms(), s.snapshot_id())
+    });
     let snapshots_stream = stream::iter(
-        metadata
-            .snapshots()
+        snapshots
+            .into_iter()
             .map(|s| Ok(SnapshotInfo::from_snapshot(s))),
     );
     output.display_stream(snapshots_stream).await
@@ -370,6 +440,195 @@ mod tests {
             "s3://bucket/table/snap-123.avro",
         ))
         .unwrap()
+    }
+
+    /// Runs a table command against a table with the given metadata, returning its output.
+    async fn command_output(metadata: &serde_json::Value, command: TableCommands) -> String {
+        let location = "s3://bucket/table/metadata.json";
+        let file_io = create_memory_file_io(vec![(location, &metadata.to_string())]).await;
+        let table = load_table(&file_io, location).await.unwrap();
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        handle_table_command(&table, command, &mut output, None)
+            .await
+            .unwrap();
+        String::from_utf8(buffer).unwrap()
+    }
+
+    /// Enough entries that a hash-ordered listing is very unlikely to come out sorted by chance.
+    const MANY: i64 = 10;
+
+    fn metadata_with_many_schemas() -> serde_json::Value {
+        let mut metadata = empty_metadata();
+        metadata["schemas"] = (0..MANY)
+            .rev()
+            .map(|id| {
+                serde_json::json!({
+                    "type": "struct",
+                    "schema-id": id,
+                    "fields": [{"id": 1, "name": "id", "required": true, "type": "int"}]
+                })
+            })
+            .collect();
+        metadata
+    }
+
+    fn json_lines(output: &str) -> Vec<serde_json::Value> {
+        output
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn schemas_are_listed_by_schema_id() {
+        let output = command_output(&metadata_with_many_schemas(), TableCommands::Schemas).await;
+
+        let ids: Vec<i64> = json_lines(&output)
+            .iter()
+            .map(|schema| schema["schema-id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, (0..MANY).collect::<Vec<_>>());
+    }
+
+    /// Snapshot IDs run opposite to sequence numbers, so sorting by ID would show up as wrong.
+    fn metadata_with_many_snapshots() -> serde_json::Value {
+        let snapshot_id = |sequence_number: i64| 1_000 - sequence_number;
+        let mut metadata = empty_metadata();
+        metadata["last-sequence-number"] = serde_json::json!(MANY);
+        metadata["current-snapshot-id"] = serde_json::json!(snapshot_id(MANY));
+        metadata["snapshots"] = (1..=MANY)
+            .rev()
+            .map(|sequence_number| {
+                serde_json::json!({
+                    "snapshot-id": snapshot_id(sequence_number),
+                    "sequence-number": sequence_number,
+                    "timestamp-ms": 1600000000000_i64 + sequence_number,
+                    "manifest-list": format!("s3://bucket/table/snap-{sequence_number}.avro"),
+                    "summary": { "operation": "append" },
+                    "schema-id": 0
+                })
+            })
+            .collect();
+        metadata
+    }
+
+    #[tokio::test]
+    async fn snapshots_are_listed_oldest_first() {
+        let output =
+            command_output(&metadata_with_many_snapshots(), TableCommands::Snapshots).await;
+
+        let sequence_numbers: Vec<i64> = json_lines(&output)
+            .iter()
+            .map(|snapshot| snapshot["sequence-number"].as_i64().unwrap())
+            .collect();
+        assert_eq!(sequence_numbers, (1..=MANY).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn snapshot_summary_lists_operation_then_sorted_keys() {
+        let keys: Vec<String> = (0..MANY).map(|i| format!("key-{i}")).collect();
+        let mut metadata = metadata_with_snapshot(123, "s3://bucket/table/snap-123.avro");
+        let summary = &mut metadata["snapshots"][0]["summary"];
+        keys.iter()
+            .rev()
+            .for_each(|key| summary[key] = serde_json::json!("value"));
+
+        let output = command_output(
+            &metadata,
+            TableCommands::Snapshot {
+                snapshot_id: "current".to_string(),
+                command: SnapshotCmd::Info,
+            },
+        )
+        .await;
+
+        let positions: Vec<usize> = std::iter::once("operation")
+            .chain(keys.iter().map(String::as_str))
+            .map(|key| output.find(&format!("\"{key}\"")).unwrap())
+            .collect();
+        assert!(
+            positions.is_sorted(),
+            "summary keys out of order in:\n{output}"
+        );
+    }
+
+    /// Metadata where every collection that iceberg-rust keeps in a `HashMap` has many entries.
+    fn metadata_with_many_of_everything() -> serde_json::Value {
+        let mut metadata = metadata_with_many_snapshots();
+        metadata["schemas"] = metadata_with_many_schemas()["schemas"].clone();
+        metadata["partition-specs"] = (0..MANY)
+            .rev()
+            .map(|id| serde_json::json!({"spec-id": id, "fields": []}))
+            .collect();
+        metadata["sort-orders"] = (0..MANY)
+            .rev()
+            .map(|id| {
+                let fields = if id == 0 {
+                    serde_json::json!([])
+                } else {
+                    serde_json::json!([{
+                        "transform": "identity",
+                        "source-id": 1,
+                        "direction": "asc",
+                        "null-order": "nulls-first"
+                    }])
+                };
+                serde_json::json!({"order-id": id, "fields": fields})
+            })
+            .collect();
+        metadata["properties"] = (0..MANY)
+            .map(|i| (format!("property-{i}"), serde_json::json!("value")))
+            .collect();
+        metadata["refs"] = (0..MANY)
+            .map(|i| {
+                (
+                    format!("branch-{i}"),
+                    serde_json::json!({"snapshot-id": 1_000 - MANY, "type": "branch"}),
+                )
+            })
+            .collect();
+        metadata
+    }
+
+    #[tokio::test]
+    async fn metadata_output_is_the_same_every_time() {
+        let metadata = metadata_with_many_of_everything();
+
+        let first = command_output(&metadata, TableCommands::Metadata).await;
+        let second = command_output(&metadata, TableCommands::Metadata).await;
+
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn metadata_lists_collections_by_id() {
+        let output =
+            command_output(&metadata_with_many_of_everything(), TableCommands::Metadata).await;
+        let metadata: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        let ids = |collection: &str, id: &str| -> Vec<i64> {
+            metadata[collection]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item[id].as_i64().unwrap())
+                .collect()
+        };
+        assert_eq!(ids("schemas", "schema-id"), (0..MANY).collect::<Vec<_>>());
+        assert_eq!(
+            ids("partition-specs", "spec-id"),
+            (0..MANY).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            ids("sort-orders", "order-id"),
+            (0..MANY).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            ids("snapshots", "sequence-number"),
+            (1..=MANY).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]

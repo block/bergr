@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use futures::stream;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::Write;
 
 pub async fn handle_catalog_command<W: Write>(
@@ -42,7 +42,7 @@ async fn list_namespaces<W: Write>(
 #[derive(Debug, Serialize)]
 struct NamespaceInfo {
     name: String,
-    properties: HashMap<String, String>,
+    properties: BTreeMap<String, String>,
 }
 
 async fn get_namespace<W: Write>(
@@ -58,7 +58,11 @@ async fn get_namespace<W: Write>(
 
     let info = NamespaceInfo {
         name: namespace.name().to_string(),
-        properties: namespace.properties().clone(),
+        properties: namespace
+            .properties()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
     };
 
     output.display_object(&info)
@@ -212,6 +216,44 @@ mod tests {
         assert_eq!(namespace["name"], "production");
         assert_eq!(namespace["properties"]["owner"], "data-team");
         assert_eq!(namespace["properties"]["description"], "Production data");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn namespace_info_lists_properties_in_sorted_order() -> Result<()> {
+        let catalog = create_memory_catalog().await?;
+        let keys: Vec<String> = (0..10).map(|i| format!("key-{i}")).collect();
+        let props = keys
+            .iter()
+            .map(|key| (key.clone(), "value".to_string()))
+            .collect();
+        catalog
+            .create_namespace(&NamespaceIdent::new("production".to_string()), props)
+            .await?;
+
+        let mut buffer = Vec::new();
+        let mut output = TerminalOutput::with_writer(&mut buffer);
+        handle_catalog_command(
+            &catalog,
+            CatalogCommands::Namespace {
+                name: "production".to_string(),
+                command: NamespaceCmd::Info,
+            },
+            &mut output,
+            None,
+        )
+        .await?;
+
+        let output_str = String::from_utf8(buffer)?;
+        let positions: Vec<usize> = keys
+            .iter()
+            .map(|key| output_str.find(&format!("\"{key}\"")).unwrap())
+            .collect();
+        assert!(
+            positions.is_sorted(),
+            "properties out of order in:\n{output_str}"
+        );
 
         Ok(())
     }
