@@ -1,3 +1,4 @@
+use crate::aws::vended_s3_client;
 use crate::cli::{SnapshotCmd, TableCommands};
 use crate::error::ExpectedError;
 use crate::file_existence::{FileExistenceChecker, create_existence_checker};
@@ -257,6 +258,8 @@ async fn handle_snapshot_files<W: Write>(
 ) -> Result<()> {
     let existence_checker: Option<Box<dyn FileExistenceChecker>> = if verify {
         let prefix = data_file_prefix(table.metadata())?;
+        let vended_s3_client = vended_s3_client(table.file_io().config().props());
+        let s3_client = vended_s3_client.as_ref().or(s3_client);
         Some(create_existence_checker(table.file_io().clone(), &prefix, s3_client).await?)
     } else {
         None

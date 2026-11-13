@@ -9,7 +9,7 @@ use aws_sdk_s3::Client;
 use iceberg::io::FileIO;
 use std::collections::HashSet;
 use tracing::debug;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Checks whether files exist at given locations.
 #[async_trait]
@@ -65,7 +65,9 @@ impl FileExistenceChecker for PreloadedExistenceChecker {
 /// If the data prefix is on S3 and an S3 client is provided, uses a bulk
 /// `ListObjectsV2` call and returns a `PreloadedExistenceChecker`.
 ///
-/// Otherwise, returns a `FileIOExistenceChecker` that delegates to per-file checks.
+/// Otherwise, or if the listing fails, returns a `FileIOExistenceChecker` that delegates to
+/// per-file checks. Listing is only an optimisation, and credentials that can read a table's files
+/// can't always list them; Polaris's vended keys, for example, can't.
 pub async fn create_existence_checker(
     file_io: FileIO,
     data_prefix: &str,
@@ -77,13 +79,17 @@ pub async fn create_existence_checker(
     if let Some((bucket, prefix)) = parse_s3_url(data_prefix)
         && let Some(client) = s3_client
     {
-        let base_url = format!("s3://{}/{}", bucket, prefix);
-        let suffixes = list_object_suffixes(client, bucket, prefix).await?;
-        debug!(
-            file_count = suffixes.len(),
-            "Using preloaded S3 existence checker"
-        );
-        return Ok(Box::new(PreloadedExistenceChecker::new(base_url, suffixes)));
+        match list_object_suffixes(client, bucket, prefix).await {
+            Ok(suffixes) => {
+                debug!(
+                    file_count = suffixes.len(),
+                    "Using preloaded S3 existence checker"
+                );
+                let base_url = format!("s3://{}/{}", bucket, prefix);
+                return Ok(Box::new(PreloadedExistenceChecker::new(base_url, suffixes)));
+            }
+            Err(err) => warn!(error = format!("{err:#}"), "Couldn't list S3 objects"),
+        }
     }
 
     debug!("Using FileIO existence checker");
@@ -149,6 +155,60 @@ mod tests {
         );
         assert_eq!(parse_s3_url("gs://bucket/path"), None);
         assert_eq!(parse_s3_url("not-a-url"), None);
+    }
+
+    /// An S3 client whose every request is denied, as with vended keys that can read objects but
+    /// not list them.
+    fn access_denied_s3_client(server: &mockito::Server) -> Client {
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                "key", "secret", None, None, "test",
+            ))
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url(server.url())
+            .force_path_style(true)
+            .build();
+        Client::from_conf(config)
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_file_io_when_listing_is_denied() {
+        let mut server = mockito::Server::new_async().await;
+        let _denied = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(403)
+            .with_body("<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>")
+            .create_async()
+            .await;
+        let file_io = FileIO::new_with_memory();
+        file_io
+            .new_output("s3://bucket/data/file1.parquet")
+            .unwrap()
+            .write(bytes::Bytes::from("data"))
+            .await
+            .unwrap();
+
+        let checker = create_existence_checker(
+            file_io,
+            "s3://bucket/data/",
+            Some(&access_denied_s3_client(&server)),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            checker
+                .exists("s3://bucket/data/file1.parquet")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !checker
+                .exists("s3://bucket/data/file2.parquet")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
