@@ -84,9 +84,11 @@ BERGR_REST_OAUTH2_CREDENTIAL="$(cat ~/.config/polaris-credential)" BERGR_REST_OA
 
 #### Table files
 
-To read a table's files, `bergr rest` asks the catalog for short-lived storage credentials ("vended credentials"), and uses the storage settings the catalog returns with each table. If the catalog doesn't vend credentials, bergr falls back to your own: for S3, the standard AWS credential variables and profile.
+To read a table's files, `bergr rest` asks the catalog for short-lived storage credentials ("vended credentials"), and uses the storage settings the catalog returns with each table. If the catalog doesn't vend credentials, bergr falls back to your own: for S3, the standard AWS credential variables and profile. `snapshot … files --verify` lists the table's data files with the same credentials where it can, and otherwise checks each file individually, which is slower.
 
-Set `--access-delegation none` (or `BERGR_REST_ACCESS_DELEGATION=none`) to tell the catalog that bergr doesn't need vended credentials. This sends `X-Iceberg-Access-Delegation: none` instead of `vended-credentials`. AWS Glue's table files are always read with your AWS credentials.
+Set `--access-delegation none` (or `BERGR_REST_ACCESS_DELEGATION=none`) to tell the catalog that bergr doesn't need vended credentials. This sends `X-Iceberg-Access-Delegation: none` instead of `vended-credentials`.
+
+AWS Glue vends credentials whatever the setting, through Lake Formation, so its table files are read with Lake Formation's permissions rather than your own access to S3.
 
 ### Direct access via metadata file location
 

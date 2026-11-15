@@ -4,11 +4,15 @@ use crate::error::ExpectedError;
 use crate::rest::rest_catalog_props;
 use crate::sigv4::{SigV4AuthManager, SigningScope};
 use anyhow::{Context as _, Result};
-use aws_config::BehaviorVersion;
 use aws_config::meta::credentials::CredentialsProviderChain;
+use aws_config::{BehaviorVersion, Region};
+use aws_credential_types::Credentials;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use iceberg::CatalogBuilder;
-use iceberg::io::{FileIO, FileIOBuilder, S3_REGION};
+use iceberg::io::{
+    CLIENT_REGION, FileIO, FileIOBuilder, S3_ACCESS_KEY_ID, S3_ENDPOINT, S3_PATH_STYLE_ACCESS,
+    S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN, Storage, StorageConfig, StorageFactory,
+};
 use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
     GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalog, GlueCatalogBuilder,
@@ -18,6 +22,7 @@ use iceberg_storage_opendal::{
     AwsCredential, CustomAwsCredentialLoader, OpenDalStorageFactory, ProvideCredential,
 };
 use reqsign_core::{Context, Error as ReqsignError, ErrorKind, Result as ReqsignResult};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -77,6 +82,71 @@ fn s3_storage_factory(aws_config: &aws_config::SdkConfig) -> Arc<OpenDalStorageF
     Arc::new(OpenDalStorageFactory::S3 {
         customized_credential_load: credential_loader(aws_config),
     })
+}
+
+/// S3 storage that reads a table's files with credentials vended by the catalog, when the table's
+/// config has them, and with bergr's own AWS credentials otherwise.
+#[derive(Debug, Serialize, Deserialize)]
+struct VendedFirstS3StorageFactory {
+    /// Process-local, so not serialised; a deserialised factory has no fallback.
+    #[serde(skip)]
+    fallback: Option<CustomAwsCredentialLoader>,
+}
+
+#[typetag::serde(name = "BergrVendedFirstS3StorageFactory")]
+impl StorageFactory for VendedFirstS3StorageFactory {
+    fn build(&self, config: &StorageConfig) -> iceberg::Result<Arc<dyn Storage>> {
+        OpenDalStorageFactory::S3 {
+            customized_credential_load: storage_credential_loader(
+                config.props(),
+                self.fallback.as_ref(),
+            ),
+        }
+        .build(config)
+    }
+}
+
+/// A custom loader replaces opendal's whole credential chain, including any keys in the table's
+/// config, so leave it out when the catalog has vended keys.
+fn storage_credential_loader(
+    props: &HashMap<String, String>,
+    fallback: Option<&CustomAwsCredentialLoader>,
+) -> Option<CustomAwsCredentialLoader> {
+    fallback
+        .cloned()
+        .filter(|_| !props.contains_key(S3_ACCESS_KEY_ID))
+}
+
+/// The S3 credentials a catalog vended for a table, if any, from the table's storage properties.
+fn vended_credentials(props: &HashMap<String, String>) -> Option<Credentials> {
+    Some(Credentials::new(
+        props.get(S3_ACCESS_KEY_ID)?,
+        props.get(S3_SECRET_ACCESS_KEY)?,
+        props.get(S3_SESSION_TOKEN).cloned(),
+        None,
+        "catalog",
+    ))
+}
+
+/// An S3 client that uses the keys a catalog vended for a table, if it vended any, configured from
+/// the table's storage properties the way opendal reads them.
+pub fn vended_s3_client(props: &HashMap<String, String>) -> Option<aws_sdk_s3::Client> {
+    let credentials = vended_credentials(props)?;
+    let region = props
+        .get(CLIENT_REGION)
+        .or_else(|| props.get(S3_REGION))
+        .map(|region| Region::new(region.clone()));
+    let path_style = props
+        .get(S3_PATH_STYLE_ACCESS)
+        .is_some_and(|value| ["true", "t", "1", "on"].contains(&value.to_lowercase().as_str()));
+
+    let mut config = aws_sdk_s3::Config::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .credentials_provider(credentials)
+        .region(region)
+        .force_path_style(path_style);
+    config.set_endpoint_url(props.get(S3_ENDPOINT).cloned());
+    Some(aws_sdk_s3::Client::from_conf(config.build()))
 }
 
 pub async fn get_aws_config() -> Result<aws_config::SdkConfig> {
@@ -171,7 +241,9 @@ pub async fn aws_rest_catalog(
 
     let catalog = RestCatalogBuilder::default()
         .with_auth_manager(SigV4AuthManager::new(scope, credentials))
-        .with_storage_factory(s3_storage_factory(aws_config))
+        .with_storage_factory(Arc::new(VendedFirstS3StorageFactory {
+            fallback: credential_loader(aws_config),
+        }))
         .load("rest", props)
         .await?;
 
@@ -241,6 +313,59 @@ mod tests {
         let aws_config = test_aws_config().await;
 
         assert!(check_credentials(&aws_config).await.is_ok());
+    }
+
+    fn vended_props() -> HashMap<String, String> {
+        HashMap::from([
+            (S3_ACCESS_KEY_ID.to_string(), "vended-key".to_string()),
+            (
+                S3_SECRET_ACCESS_KEY.to_string(),
+                "vended-secret".to_string(),
+            ),
+            (S3_SESSION_TOKEN.to_string(), "vended-token".to_string()),
+        ])
+    }
+
+    #[tokio::test]
+    async fn storage_uses_no_custom_loader_when_the_catalog_vends_keys() {
+        let fallback = credential_loader(&test_aws_config().await);
+
+        assert!(storage_credential_loader(&vended_props(), fallback.as_ref()).is_none());
+    }
+
+    #[tokio::test]
+    async fn storage_falls_back_to_bergr_credentials_without_vended_keys() {
+        let fallback = credential_loader(&test_aws_config().await);
+
+        assert!(storage_credential_loader(&HashMap::new(), fallback.as_ref()).is_some());
+    }
+
+    #[test]
+    fn no_vended_s3_client_without_vended_keys() {
+        assert!(vended_s3_client(&HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn vended_credentials_come_from_the_table_props() {
+        let credentials = vended_credentials(&vended_props()).unwrap();
+
+        assert_eq!(credentials.access_key_id(), "vended-key");
+        assert_eq!(credentials.secret_access_key(), "vended-secret");
+        assert_eq!(credentials.session_token(), Some("vended-token"));
+    }
+
+    #[test]
+    fn vended_s3_client_prefers_client_region_as_opendal_does() {
+        let mut props = vended_props();
+        props.insert(S3_REGION.to_string(), "us-east-1".to_string());
+        props.insert(CLIENT_REGION.to_string(), "us-west-2".to_string());
+
+        let client = vended_s3_client(&props).unwrap();
+
+        assert_eq!(
+            client.config().region().map(|r| r.as_ref()),
+            Some("us-west-2")
+        );
     }
 
     #[tokio::test]
